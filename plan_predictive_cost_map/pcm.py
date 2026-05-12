@@ -70,7 +70,7 @@ class pcm_node(Node):
         self.trajectory = Trajectory()
 
         self.runningTime = 0.0
-        self.plot_results = False
+        self.plot_results = True
         
 
         # declare rosparams
@@ -318,60 +318,7 @@ class pcm_node(Node):
         x = self.f_obj_x(t, vx, x0)
         return self.f_l_y(x, c)
 
-
-    def visualize_scene(self, box_length=4.0, box_width=2.0):
-        """
-        Live bird's-eye view visualization of objects and lanes.
-        Only one figure window is used and updated each cycle.
-        """
-        # --- Create figure and axes only once ---
-        if not hasattr(self, "_fig_ax"):
-            self._fig_ax = plt.subplots()
-            self._fig, self._ax = self._fig_ax  # unpack
-            self._ax.set_aspect('equal')
-        
-        ax = self._ax
-        ax.clear()  # clear previous objects/lanes
-
-        # --- Plot lanes ---
-        if self.lanes.get("ego_lane_x") and self.lanes.get("ego_lane_y"):
-            ax.plot(self.lanes["ego_lane_x"], self.lanes["ego_lane_y"], 'g--', label="Ego Lane")
-        if self.lanes.get("left_lane_x") and self.lanes.get("left_lane_y"):
-            ax.plot(self.lanes["left_lane_x"], self.lanes["left_lane_y"], 'b--', label="Left Lane")
-        
-        # --- Plot objects ---
-        for obj in self.oncomingObjects:
-            rect = patches.Rectangle(
-                (obj.x - box_length / 2, obj.y - box_width / 2),
-                box_length,
-                box_width,
-                angle=obj.theta * 180 / 3.141592,  # radians -> degrees
-                linewidth=1,
-                edgecolor='r',
-                facecolor='none'
-            )
-            ax.add_patch(rect)
-            ax.plot(obj.x, obj.y, 'bo')  # center point
-
-        # --- Configure plot ---
-        ax.set_xlabel("X [m]")
-        ax.set_ylabel("Y [m]")
-        ax.set_title("Bird's Eye View: Objects + Lanes")
-        ax.grid(True)
-        ax.legend()
-        
-        # --- Autoscale to objects and lanes ---
-        all_x = [obj.x for obj in self.oncomingObjects] + self.lanes.get("ego_lane_x", []) + self.lanes.get("left_lane_x", [])
-        all_y = [obj.y for obj in self.oncomingObjects] + self.lanes.get("ego_lane_y", []) + self.lanes.get("left_lane_y", [])
-        if all_x and all_y:
-            ax.set_xlim(min(all_x) - 10, max(all_x) + 10)
-            ax.set_ylim(min(all_y) - 10, max(all_y) + 10)
-
-        # --- Update the existing figure ---
-        plt.draw()
-        plt.pause(0.001)
-
-    def cost_sup(self, c):
+    def cost_sup(self, c, z_objs, df_0, v_0, c_el, c_ol):
         # c is the optimization variable (MX)
         c_lat = c[:self.N]
         c_vel = ca.vertcat(self.ego_state.vx, c[self.N:])
@@ -451,7 +398,15 @@ class pcm_node(Node):
 
         c_sym = ca.MX.sym('c', self.N + self.M)      
         c_lat = c_sym[:self.N]
-        c_vel = ca.vertcat(self.ego_state.vx, c_sym[self.N:])  
+        c_vel = ca.vertcat(self.ego_state.vx, c_sym[self.N:])
+
+        z_objs_sym = ca.MX.sym('z_objs', self.max_objs * 3)
+        df_0_sym = ca.MX.sym('df_0')
+        v_0_sym = ca.MX.sym('v_0')
+        c_el_sym = ca.MX.sym('c_el')
+        c_ol_sym = ca.MX.sym('c_ol')
+
+        p_sym = ca.vertcat(z_objs_sym, df_0_sym, v_0_sym, c_el_sym, c_ol_sym)
 
         # 2. Prepare Object Trajectories for Cost Map
         self.oc_trajectory_list.clear()
