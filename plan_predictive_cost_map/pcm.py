@@ -51,10 +51,15 @@ class pcm_node(Node):
         self.oncomingObjects = [] # empty list
         self.followedObjects = [] # empty list
 
-        self.oc_trajectory_list = []
-        self.oc_costprimitives = []
         self.time_history = []
         self.c_el_history = []
+
+        # 1. Initialize Horizon and Symbols
+        self.dt = 0.1
+        self.tau_h = 2.0
+        self.N = int(self.tau_h/self.dt)
+        self.t = ca.vertcat(*[self.dt * (i+1) for i in range(self.N)])        
+        self.M = 3  # longitudinal velocity coefficients
 
         self.ego_state = EgoState(0,0,0,0,0)
 
@@ -71,6 +76,23 @@ class pcm_node(Node):
 
         self.runningTime = 0.0
         self.plot_results = True
+        self.max_objs = 10
+
+        # symbolic definitions and Casadi optimization setup 
+        c_sym = ca.MX.sym('c', self.N + self.M)      
+        c_lat = c_sym[:self.N]
+        c_vel = ca.vertcat(self.ego_state.vx, c_sym[self.N:])
+
+        z_objs_sym = ca.MX.sym('z_objs', self.max_objs*self.N, 3)
+        z_objs_flat = ca.reshape(z_objs_sym, -1, 1)
+        df_0_sym = ca.MX.sym('df_0')
+        v_0_sym = ca.MX.sym('v_0')
+        c_el_sym = ca.MX.sym('c_el', 4, 1)
+        c_ol_sym = ca.MX.sym('c_ol', 4, 1)
+
+        p_sym = ca.vertcat(z_objs_flat, df_0_sym, v_0_sym, c_el_sym, c_ol_sym)        
+
+    
         
 
         # declare rosparams
@@ -318,7 +340,7 @@ class pcm_node(Node):
         x = self.f_obj_x(t, vx, x0)
         return self.f_l_y(x, c)
 
-    def cost_sup(self, c, z_objs, df_0, v_0, c_el, c_ol):
+    def cost_sup(self, c, p):
         # c is the optimization variable (MX)
         c_lat = c[:self.N]
         c_vel = ca.vertcat(self.ego_state.vx, c[self.N:])
@@ -331,16 +353,18 @@ class pcm_node(Node):
 
         # 2. Generate Inducing Points for Lanes (Inducing points along ego x-path)
         # These create the "Safe/Unsafe" zones for the GP
-        ego_lane_pts = ca.horzcat(x_ego, self.f_l_y(x_ego, self.c_el), self.t)
-        opp_lane_pts = ca.horzcat(x_ego, self.f_l_y(x_ego, self.c_ol), self.t)
+        c_el = p[self.max_objs*self.N*3+2:self.max_objs*self.N*3+6]
+        c_ol = p[self.max_objs*self.N*3+6:self.max_objs*self.N*3+10]
+        ego_lane_pts = ca.horzcat(x_ego, self.f_l_y(x_ego, c_el), self.t)
+        opp_lane_pts = ca.horzcat(x_ego, self.f_l_y(x_ego, c_ol), self.t)
 
-        # Ensure Z_oc is correctly formed as (num_objects, 3)
-        if self.oc_trajectory_list:
-            Z_oc = ca.vertcat(*self.oc_trajectory_list)
-            y_oc = ca.vertcat(*self.oc_costprimitives)
-        else:
-            Z_oc = ca.DM([[1000, 1000, 0]]) 
-            y_oc = ca.DM([0.0])
+        z_objs_flat = p[0:self.max_objs*self.N*3]
+        Z_oc = ca.reshape(
+            z_objs_flat,
+            self.max_objs * self.N,
+            3
+        )
+        y_oc = np.ones((self.max_objs * self.N, 1))*2
 
         # 3. Evaluate f_sup
         # This returns an [N x 1] vector of costs (one for each time step)
@@ -382,42 +406,38 @@ class pcm_node(Node):
 
 
     def callback(self):
-        t1 = default_timer()
-        
-        # 1. Initialize Horizon and Symbols
-        self.dt = 0.1
-        self.tau_h = 2.0
-        self.N = int(self.tau_h/self.dt)
-        self.t = ca.vertcat(*[self.dt * (i+1) for i in range(self.N)])        
-        self.M = 3  # longitudinal velocity coefficients
-        
+        t1 = default_timer()        
+       
         # Ensure we have lane data before proceeding
         if not hasattr(self, 'c_el') or np.all(np.array(self.c_el) == 0):
             self.get_logger().warn("Waiting for lane data...")
             return
 
-        c_sym = ca.MX.sym('c', self.N + self.M)      
-        c_lat = c_sym[:self.N]
-        c_vel = ca.vertcat(self.ego_state.vx, c_sym[self.N:])
+        p_obj = np.ones((self.max_objs * self.N, 3)) * 1000
 
-        z_objs_sym = ca.MX.sym('z_objs', self.max_objs * 3)
-        df_0_sym = ca.MX.sym('df_0')
-        v_0_sym = ca.MX.sym('v_0')
-        c_el_sym = ca.MX.sym('c_el')
-        c_ol_sym = ca.MX.sym('c_ol')
+        for i, obj in enumerate(self.oncomingObjects[:self.max_objs]):
+            x_obj = self.f_obj_x(self.t, obj.vx, obj.x)
+            y_obj = self.f_obj_y(self.t, obj.vx, obj.x, self.c_ol)
 
-        p_sym = ca.vertcat(z_objs_sym, df_0_sym, v_0_sym, c_el_sym, c_ol_sym)
+            Z_i = np.column_stack([
+                np.array(x_obj).flatten(),
+                np.array(y_obj).flatten(),
+                np.array(self.t).flatten()
+            ])
 
-        # 2. Prepare Object Trajectories for Cost Map
-        self.oc_trajectory_list.clear()
-        self.oc_costprimitives.clear()
-        for n_object in self.oncomingObjects:
-            # Predict object position at t=0 (can be expanded to predict over horizon)
-            x_obj = self.f_obj_x(self.t, n_object.vx, n_object.x)
-            y_obj = self.f_obj_y(self.t, n_object.vx, n_object.x, self.c_ol)
-            traj = ca.horzcat(x_obj, y_obj, self.t)
-            self.oc_trajectory_list.append(traj)
-            self.oc_costprimitives.append(ca.DM.ones(self.N,1)*2.0)
+            start = i * self.N
+            end = (i + 1) * self.N
+
+            p_obj[start:end, :] = Z_i
+
+
+        p_numeric = np.concatenate([
+            p_obj.reshape(-1, order='F'),
+            np.array([self.ego_state.steeringAngle]),
+            np.array([self.ego_state.vx]),
+            self.c_el,
+            self.c_ol
+        ]).flatten()
 
         # 3. Setup Grid for Visualization
         x_vals = np.arange(0, 150.5, 1.0)  # Coarser step for speed
@@ -437,21 +457,13 @@ class pcm_node(Node):
         Z_ol = ca.horzcat(x_lane_samples, y_ol_samples, np.zeros_like(x_lane_samples))
         y_ol_val = ca.DM.ones(x_lane_samples.size, 1) * -0.1
 
-        # Handle Object Matrix
-        if self.oc_trajectory_list:
-            Z_oc = ca.vertcat(*self.oc_trajectory_list)
-            y_oc = ca.vertcat(*self.oc_costprimitives)
-        else:
-            Z_oc = ca.DM([[1000, 1000, 0]]) 
-            y_oc = ca.DM([0.0])
-
         # Constraints (Kinematics)
         x_ego = self.f_ego_x(self.t, c_vel, c_lat, self.ego_state.steeringAngle)
         y_ego = self.f_ego_y(self.t, c_vel, c_lat, self.ego_state.steeringAngle)
         g = y_ego # We constrain the y-position over the horizon
 
         # 1. Get the individual cost terms (Symbolic)
-        cost_safety, fsup_vec_sym = self.cost_sup(c_sym)   # Range [0, 1]
+        cost_safety, fsup_vec_sym = self.cost_sup(c_sym, p_sym)   # Range [0, 1]
         cost_velocity = self.get_cost_vel(c_sym) # Range [0, ~1]
 
         # 2. Define Weights
@@ -464,11 +476,8 @@ class pcm_node(Node):
         # We also keep the regularization for steering smoothness (c_lat)
         obj = (w_safety * cost_safety) + (w_vel * cost_velocity)
 
-        # 4. Setup Solver
-        nlp = {'x': c_sym, 'f': obj, 'g': g}
-
         # 6. Setup and Solve NLP
-        nlp = {'x': c_sym, 'f': obj, 'g': g}
+        nlp = {'x': c_sym, 'f': obj, 'g': g, 'p': p_sym}
         opts = {
             'ipopt.print_level': 0, 
             'print_time': 0, 
@@ -479,8 +488,8 @@ class pcm_node(Node):
 
         fsup_eval_fun = ca.Function(
             'fsup_eval_fun',
-            [c_sym],
-            [fsup_vec_sym]
+            [c_sym, p_sym],
+            [fsup_vec_sym],
         )
 
         # Variable Bounds (lbx, ubx)
@@ -500,7 +509,7 @@ class pcm_node(Node):
         if not hasattr(self, 'last_c_opt'): self.last_c_opt = np.zeros(self.N + self.M)
         
         #sol = solver(x0=self.last_c_opt, lbx=lbc, ubx=ubc, lbg=lbg, ubg=ubg)
-        sol = solver(x0=self.last_c_opt, lbx=lbc, ubx=ubc)
+        sol = solver(x0=self.last_c_opt, lbx=lbc, ubx=ubc, p=p_numeric)
         c_numeric = sol['x']
         self.last_c_opt = c_numeric.full().flatten()
 
@@ -520,6 +529,13 @@ class pcm_node(Node):
         if self.plot_results:
             # # 7. Evaluate Visuals Numerically
             # # Evaluate Heatmap for the whole grid
+            z_objs_flat = p_numeric[0:self.max_objs*self.N*3]
+            Z_oc = ca.reshape(
+                z_objs_flat,
+                self.max_objs * self.N,
+                3
+            )
+            y_oc = np.ones((self.max_objs * self.N, 1))*2
             fsup_grid_vals = self.f_sup(X_casadi_grid, Z_oc, y_oc, self.p_ov, Z_el, y_el_val, self.p_el, Z_ol, y_ol_val, self.p_ol)
             fsup_grid = np.array(fsup_grid_vals.full()).reshape(len(y_vals), len(x_vals))
 
@@ -558,8 +574,8 @@ class pcm_node(Node):
 
 
             # Plot objects as dots
-            #if self.oncomingObjects:
-            #    self.ax.plot([o.x for o in self.oncomingObjects], [o.y for o in self.oncomingObjects], 'bo', label='Objects')
+            if self.oncomingObjects:
+               self.ax.plot([o.x for o in self.oncomingObjects], [o.y for o in self.oncomingObjects], 'bo', label='Objects')
 
             self.ax.legend(loc='upper right')
             plt.draw()
