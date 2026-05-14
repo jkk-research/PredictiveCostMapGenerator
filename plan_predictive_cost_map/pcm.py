@@ -71,8 +71,8 @@ class pcm_node(Node):
         self.c_el = [0, 0, 0, 0]
         self.c_ol = [0, 0, 0, 0]
 
-        self.p_ov = [math.exp(0.0), math.exp(1.5), math.exp(1.0), math.exp(0.1)]
-        self.p_fv = [math.exp(0.0), math.exp(1.5), math.exp(1.0), math.exp(0.1)]
+        self.p_ov = [math.exp(0.0), math.exp(1.5), math.exp(1.08), math.exp(1.0)]
+        self.p_fv = [math.exp(0.0), math.exp(1.5), math.exp(1.5), math.exp(1.0)]
         self.p_el = [math.exp(-1.0), math.exp(0.0), math.exp(0.2), math.exp(-100)]
         self.p_ol = [math.exp(-1.0), math.exp(1.0), math.exp(-0.1), math.exp(-3)]
 
@@ -84,6 +84,7 @@ class pcm_node(Node):
         self.plot_results = False
         self.max_objs = 2
         self.max_followedObjs = 2
+        self.ay_max = 3
 
         # symbolic definitions and Casadi optimization setup 
         self.c_sym = ca.MX.sym('c', self.N + self.M)              
@@ -103,16 +104,18 @@ class pcm_node(Node):
         # 1. Get the individual cost terms (Symbolic)
         cost_safety , _= self.cost_sup(self.c_sym, self.p_sym)   # Range [0, 1]
         cost_velocity = self.get_cost_vel(self.c_sym, self.p_sym) # Range [0, ~1]
+        cost_ay = ca.sumsqr(self.f_ego_ay(c_vel, c_lat, self.p_sym[self.max_objs*self.N*3]))/(self.ay_max * self.N)
 
         # 2. Define Weights
         # weight_safety: Keep the car away from objects/lane bounds
         # weight_vel: Keep the car at the target speed
         w_safety = 0.65
-        w_vel = 0.35 
+        w_vel = 0.15 
+        w_ay = 0.01
         
         # 3. Combine into final Objective
         # We also keep the regularization for steering smoothness (c_lat)
-        obj = (w_safety * cost_safety) + (w_vel * cost_velocity)
+        obj = (w_safety * cost_safety) + (w_vel * cost_velocity) + (w_ay * cost_ay)
 
         # 6. Setup and Solve NLP
         nlp = {'x': self.c_sym, 'f': obj, 'g': self.g, 'p': self.p_sym}
@@ -277,6 +280,13 @@ class pcm_node(Node):
 
     def f_ego_ax(self, t, c_vel):
         return c_vel[1] + 2*c_vel[2]*t + 3*c_vel[3]*t**2
+
+    def f_ego_ay(self, c_vel, dd_f, d_f0):
+        delta = self.f_delta(self.t, dd_f, d_f0)
+        L = 2.7
+        yawRate = ca.tan(delta)/L * self.f_ego_vx(self.t, c_vel)
+
+        return yawRate*self.f_ego_vx(self.t, c_vel)
 
     def f_l_y(self, x, c):
         return self.y_curve(x, c)
@@ -538,7 +548,7 @@ class pcm_node(Node):
             c_numeric = sol['x']
             self.last_c_opt = c_numeric.full().flatten()
 
-            steeringAngleTarget = self.f_delta(0.1,c_numeric[1], self.ego_state.steeringAngle)
+            steeringAngleTarget = self.f_delta(0.2,c_numeric[2], self.ego_state.steeringAngle)
             velocityTarget = self.f_ego_vx(0.1, ca.vertcat(self.ego_state.vx, c_numeric[self.N:]))
             steeringAngleTarget_next = steeringAngleTarget[0]
             velocityTarget_next = velocityTarget[0]
