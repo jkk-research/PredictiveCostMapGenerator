@@ -500,13 +500,15 @@ class pcm_node(Node):
         # Generate inducing points for the lanes
         # Ego lane
         K_el = self.k(ego_lane_pts, ego_lane_pts, self.p_el)
-        K_el = K_el + ca.MX.eye(self.N)
+        K_el = K_el + 0.001**2 * ca.MX.eye(self.N)
+        #K_el = K_el + ca.MX.eye(self.N)
         y_el = self.egolane_cost_primitive * ca.DM.ones(self.N, 1)
         alpha_el = ca.solve(K_el, y_el)
 
         # Oncoming lane
         K_ol = self.k(opp_lane_pts, opp_lane_pts, self.p_ol)
-        K_ol = K_ol + ca.MX.eye(self.N)
+        K_ol = K_ol + 0.001**2 * ca.MX.eye(self.N)
+        #K_ol = K_ol + ca.MX.eye(self.N)
         y_ol = self.opplane_cost_primitive * ca.DM.ones(self.N, 1)
         alpha_ol = ca.solve(K_ol, y_ol)
 
