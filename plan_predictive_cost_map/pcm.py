@@ -60,8 +60,8 @@ class pcm_node(Node):
         self.c_el_history = []
 
         # 1. Initialize Horizon and Symbols
-        self.dt = 0.1
-        self.tau_h = 2.0
+        self.dt = 0.15
+        self.tau_h = 3.0
         self.N = int(self.tau_h/self.dt)
         self.t = ca.vertcat(*[self.dt * (i+1) for i in range(self.N)])        
         self.M = 3  # longitudinal velocity coefficients
@@ -72,8 +72,8 @@ class pcm_node(Node):
         self.c_ol = [0, 0, 0, 0]
 
         self.p_ov = [math.exp(0.0), math.exp(1.5), math.exp(1.08), math.exp(1.0)]
-        self.p_fv = [math.exp(0.0), math.exp(1.5), math.exp(1.5), math.exp(1.0)]
-        self.p_el = [math.exp(-1.0), math.exp(0.0), math.exp(0.2), math.exp(-100)]
+        self.p_fv = [math.exp(0.0), math.exp(1.5), math.exp(2.0), math.exp(2.0)]
+        self.p_el = [math.exp(-1.0), math.exp(1.0), math.exp(0.0), math.exp(-100)]
         self.p_ol = [math.exp(-1.0), math.exp(1.0), math.exp(-0.1), math.exp(-3)]
 
 
@@ -99,7 +99,37 @@ class pcm_node(Node):
         # Constraints (Kinematics)
         x_ego = self.f_ego_x(self.t, c_vel, c_lat, self.p_sym[self.max_objs*self.N*3])
         y_ego = self.f_ego_y(self.t, c_vel, c_lat, self.p_sym[self.max_objs*self.N*3])
-        self.g = y_ego # We constrain the y-position over the horizon
+        # Lane polynomial coefficients
+        c_el = self.p_sym[
+            self.max_objs*self.N*3+2 :
+            self.max_objs*self.N*3+6
+        ]
+
+        c_ol = self.p_sym[
+            self.max_objs*self.N*3+6 :
+            self.max_objs*self.N*3+10
+        ]
+        lane_half_width = 1.875
+
+        y_right_bound = self.f_l_y(x_ego, c_el) - lane_half_width
+        y_left_bound  = self.f_l_y(x_ego, c_ol) + lane_half_width
+        g_right = y_right_bound - y_ego
+
+        # ego must stay BELOW left boundary:
+        g_left = y_ego - y_left_bound
+
+        # Safety cost constraint
+        _, fsup_vec = self.cost_sup(self.c_sym, self.p_sym)
+
+        # fsup <= 0
+        g_cost = fsup_vec + 0.1
+
+        # Stack all nonlinear constraints
+        self.g = ca.vertcat(
+            g_right,
+            g_left,
+            g_cost
+        )
 
         # 1. Get the individual cost terms (Symbolic)
         cost_safety , _= self.cost_sup(self.c_sym, self.p_sym)   # Range [0, 1]
@@ -122,13 +152,22 @@ class pcm_node(Node):
         opts = {
             'ipopt.print_level': 0, 
             'print_time': 0, 
-            'ipopt.tol': 1e-3, 
-            'ipopt.max_iter': 50
+            'ipopt.tol': 1e-4, 
+            'ipopt.max_iter': 100
         }
         
         self.solver = ca.nlpsol('solver', 'ipopt', nlp, opts)
 
-        self.traj_eval = ca.Function('traj_eval', [self.c_sym, self.p_sym], [x_ego, y_ego])    
+        self.traj_eval = ca.Function('traj_eval', [self.c_sym, self.p_sym], [x_ego, y_ego]) 
+
+        # Evaluate f_sup_vec (= g_cost) numerically after optimization
+        _, fsup_vec = self.cost_sup(self.c_sym, self.p_sym)
+
+        self.fsup_eval = ca.Function(
+            'fsup_eval',
+            [self.c_sym, self.p_sym],
+            [fsup_vec]
+)   
         
 
         # declare rosparams
@@ -141,7 +180,7 @@ class pcm_node(Node):
             )
 
         # create publishers/subscribers
-        self.timer_period = 0.05  # [s]
+        self.timer_period = 1.0  # [s]
         self.timer = self.create_timer(self.timer_period, self.callback)
 
         self.cmd_pub = self.create_publisher(Control, '/control/command/control_cmd', 30)
@@ -384,9 +423,23 @@ class pcm_node(Node):
         y_oc = np.ones((self.max_objs * self.N, 1))*2
 
         alpha_oc = p[self.max_objs*self.N*3+10:self.max_objs*self.N*3+10+self.max_objs*self.N]
-        alpha_el = p[self.max_objs*self.N*3+10+self.max_objs*self.N:self.max_objs*self.N*3+10+self.max_objs*self.N+self.N]
-        alpha_ol = p[self.max_objs*self.N*3+10+self.max_objs*self.N+self.N:self.max_objs*self.N*3+10+self.max_objs*self.N+self.N*2]
+        #alpha_el = p[self.max_objs*self.N*3+10+self.max_objs*self.N:self.max_objs*self.N*3+10+self.max_objs*self.N+self.N]
+        #alpha_ol = p[self.max_objs*self.N*3+10+self.max_objs*self.N+self.N:self.max_objs*self.N*3+10+self.max_objs*self.N+self.N*2]
         alpha_fv = p[self.max_objs*self.N*3+10+self.max_objs*self.N+self.N*2+self.max_followedObjs*self.N*3:self.max_objs*self.N*3+10+self.max_objs*self.N+self.N*2+self.max_followedObjs*self.N*3+self.max_followedObjs*self.N]
+
+        K_el = self.k(ego_lane_pts, ego_lane_pts, self.p_el)
+        K_el = K_el + ca.MX.eye(self.N)
+
+        y_el = -ca.DM.ones(self.N, 1)
+
+        alpha_el = ca.solve(K_el, y_el)
+
+        K_ol = self.k(opp_lane_pts, opp_lane_pts, self.p_ol)
+        K_ol = K_ol + ca.MX.eye(self.N)
+
+        y_ol = -0.2 * ca.DM.ones(self.N, 1)
+
+        alpha_ol = ca.solve(K_ol, y_ol)
 
         # 3. Evaluate f_sup
         # This returns an [N x 1] vector of costs (one for each time step)
@@ -395,21 +448,21 @@ class pcm_node(Node):
             Z_oc, y_oc, self.p_ov, # Oncoming objects
             Z_fv, y_fv, self.p_fv, # Followed objects
             ego_lane_pts, ca.DM.ones(self.N, 1) * -1.0, self.p_el, # Ego lane
-            opp_lane_pts, ca.DM.ones(self.N, 1) * -0.1, self.p_ol,  # Opp lane
+            opp_lane_pts, ca.DM.ones(self.N, 1) * -0.2, self.p_ol,  # Opp lane
             alpha_oc, alpha_el, alpha_ol, alpha_fv # pre-computed symbolix kernel
         )
 
         # 4. Convert vector to scalar for optimization
         # Option A: Average cost (smoother gradient)
         # Option B: ca.sum1(ca.fmax(0, fsup_vec)) (penalize only high cost)
-        total_cost = ca.sum1(fsup_vec + 1.0) / (2.0 * self.N)
+        total_cost = ca.sum1(fsup_vec + 1.0) / self.N
         
         return total_cost, fsup_vec
 
 
     def get_cost_vel(self, c_sym, p_sym):
         # self.target_vel should be defined in __init__, e.g., self.target_vel = 20.0
-        target_v = 10.0 
+        target_v = 13.0 
         
         # Reconstruct the full 4-coefficient velocity vector
         # [v0, c_opt1, c_opt2, c_opt3]
@@ -541,15 +594,28 @@ class pcm_node(Node):
             # Variable Bounds (lbx, ubx)
             lbc = -np.inf * np.ones(self.N + self.M)
             ubc =  np.inf * np.ones(self.N + self.M)
-            lbc[:self.N] = -0.3  # Max steering rate [rad/s]
-            ubc[:self.N] = 0.3        
+            lbc[:self.N] = -0.1  # Max steering rate [rad/s]
+            ubc[:self.N] = 0.1     
 
-            sol = self.solver(x0=self.last_c_opt, lbx=lbc, ubx=ubc, p=self.p_numeric)
+            n_g = self.g.numel()
+
+            lbg = -np.inf * np.ones(n_g)
+            ubg = np.zeros(n_g)   
+
+            sol = self.solver(x0=self.last_c_opt, lbx=lbc, ubx=ubc, lbg=lbg, ubg=ubg, p=self.p_numeric)
             c_numeric = sol['x']
             self.last_c_opt = c_numeric.full().flatten()
 
-            steeringAngleTarget = self.f_delta(0.2,c_numeric[2], self.ego_state.steeringAngle)
-            velocityTarget = self.f_ego_vx(0.1, ca.vertcat(self.ego_state.vx, c_numeric[self.N:]))
+            # Evaluate f_sup_vec (= g_cost) for the optimized solution
+            f_sup_vec_numeric = self.fsup_eval(c_numeric, self.p_numeric)
+
+            # Convert CasADi DM -> NumPy array for printing
+            f_sup_vec_numeric = np.array(f_sup_vec_numeric.full()).flatten()
+
+            self.get_logger().info(f"f_sup_vec: {f_sup_vec_numeric}")
+
+            steeringAngleTarget = self.f_delta(0.05,c_numeric[0], self.ego_state.steeringAngle)
+            velocityTarget = self.f_ego_vx(0.05, ca.vertcat(self.ego_state.vx, c_numeric[self.N:]))
             steeringAngleTarget_next = steeringAngleTarget[0]
             velocityTarget_next = velocityTarget[0]
 

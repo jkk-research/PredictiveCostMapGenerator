@@ -21,7 +21,8 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'pcm = plan_predictive_cost_map.pcm:main'
+            'pcm = plan_predictive_cost_map.pcm:main',
+            'pcm_longitudinal = plan_predictive_cost_map.pcm_longitudinal:main' # <-- Added node entry point
         ],
     },
 )

@@ -9,7 +9,7 @@ def generate_launch_description():
             executable='pcm',
             parameters=[
             {"/pcm/weights/weight_costmap": 0.65}, ],
-            name='pcm',
+            name='pcm_longitudinal',
             output='screen'
         )
     
