@@ -64,7 +64,7 @@ class pcm_node(Node):
         self.c_el_history = []
 
         # 1. Initialize Horizon and Symbols
-        self.dt = 0.1
+        self.dt = 0.2
         self.tau_h = 4.0
         self.N = int(self.tau_h/self.dt)
         self.t = ca.vertcat(*[self.dt * (i+1) for i in range(self.N)])        
@@ -75,7 +75,8 @@ class pcm_node(Node):
         self.c_el = [0, 0, 0, 0]
         self.c_ol = [0, 0, 0, 0]
 
-        self.p_ped = [math.exp(0.0), math.exp(1.5), math.exp(1.08), math.exp(1.0)]
+        self.p_ped = [math.exp(0.0), math.exp(2.0), math.exp(0.5), math.exp(0.25)]
+        self.p_veh = [math.exp(0.0), math.exp(1.5), math.exp(1.08), math.exp(1.0)]
         self.p_el = [math.exp(-1.0), math.exp(1.0), math.exp(0.0), math.exp(-100)]
         self.p_ol = [math.exp(-1.0), math.exp(1.0), math.exp(-0.1), math.exp(-3)]
 
@@ -86,9 +87,11 @@ class pcm_node(Node):
         self.runningTime = 0.0
         self.plot_results = False
         self.max_pedestrians = 2
+        self.max_vehicles = 2
         self.ay_max = 3
         self.ax_max = 5
         self.pedestrian_cost_primitive = 3.0
+        self.vehicle_cost_primitive = 1.0
         self.opplane_cost_primitive = -0.2
         self.egolane_cost_primitive = -1.0
 
@@ -96,7 +99,9 @@ class pcm_node(Node):
         self.c_sym = ca.MX.sym('c', self.M)              
 
         self.z_pedestrians_sym = ca.MX.sym('z_pedestrians_sym', self.max_pedestrians*self.N, 3)
-        self.p_sym = ca.vertcat(ca.MX.sym('v_0'), ca.MX.sym('c_ego', 4, 1), ca.MX.sym('c_el', 4, 1), ca.MX.sym('c_ol', 4, 1), ca.MX.sym('alpha_ped', self.max_pedestrians*self.N, 1), ca.reshape(self.z_pedestrians_sym, -1, 1))
+        self.z_vehicles_sym = ca.MX.sym('z_vehicles_sym', self.max_vehicles*self.N, 3)
+        self.p_sym = ca.vertcat(ca.MX.sym('v_0'), ca.MX.sym('c_ego', 4, 1), ca.MX.sym('c_el', 4, 1), ca.MX.sym('c_ol', 4, 1), ca.MX.sym('alpha_ped', self.max_pedestrians*self.N, 1), ca.reshape(self.z_pedestrians_sym, -1, 1),
+                                ca.MX.sym('alpha_veh', self.max_vehicles*self.N, 1), ca.reshape(self.z_vehicles_sym, -1, 1))
 
         c_vel = ca.vertcat(self.p_sym[0], self.c_sym)  
         c_ego = self.p_sym[1:5]      
@@ -254,7 +259,24 @@ class pcm_node(Node):
                             )
                         )
                     else:
-                        self.vehicles.append(ObjectState(x, y, theta, vx, ax, type))
+                        path_points = []
+                        if obj.kinematics.predicted_paths:
+                            first_path = obj.kinematics.predicted_paths[0]
+                            for path_pose in first_path.path:
+                                path_points.append((path_pose.position.x, path_pose.position.y))
+                        
+                        # Explicitly pass the parsed path
+                        self.vehicles.append(
+                            ObjectState(
+                                x=x, 
+                                y=y, 
+                                theta=theta, 
+                                vx=vx, 
+                                ax=ax, 
+                                type=type, 
+                                predicted_path=np.array(path_points) if path_points else np.empty((0, 2))
+                            )
+                        )
 
             # lanes
             # Ego lane
@@ -332,10 +354,12 @@ class pcm_node(Node):
 
     def f_sup(self, X,
                     Z_ped, y_ped, p_ped,
+                    Z_veh, y_veh, p_veh,
                     Z_el, y_el, p_el,
                     Z_ol, y_ol, p_ol,
-                    alpha_el, alpha_ol, alpha_ped):
-        avg_dyn = self.f_dyn(X, Z_ped, y_ped, p_ped, 1, alpha_ped)
+                    alpha_el, alpha_ol, alpha_ped, alpha_veh):
+        avg_dyn = self.smooth_max( self.f_dyn(X, Z_ped, y_ped, p_ped, 1, alpha_ped),
+                        self.f_dyn(X, Z_veh, y_veh, p_veh, 1, alpha_veh))
 
         min_dyn = ca.fmin(self.f_dyn_(X, Z_el, y_el, p_el, 1, alpha_el),
                         self.f_dyn_(X, Z_ol, y_ol, p_ol, 1, alpha_ol))
@@ -450,6 +474,11 @@ class pcm_node(Node):
         alpha_ped = p[13:13+self.max_pedestrians*self.N]
         z_pedestrians_flat = p[13+self.max_pedestrians*self.N:13+self.max_pedestrians*self.N+3*self.max_pedestrians*self.N]
 
+        alpha_veh = p[13+self.max_pedestrians*self.N+3*self.max_pedestrians*self.N:
+                      13+self.max_pedestrians*self.N+3*self.max_pedestrians*self.N + self.max_vehicles*self.N]
+        z_vehicles_flat = p[13+self.max_pedestrians*self.N+3*self.max_pedestrians*self.N + self.max_vehicles*self.N:
+                            13+self.max_pedestrians*self.N+3*self.max_pedestrians*self.N + self.max_vehicles*self.N + 3*self.max_vehicles*self.N]
+
         c_vel = ca.vertcat(
             vx0,
             c
@@ -490,14 +519,24 @@ class pcm_node(Node):
         )
         y_ped = np.ones((self.max_pedestrians * self.N, 1))*self.pedestrian_cost_primitive
 
+        # Generate inducing points for vehicles
+
+        Z_veh = ca.reshape(
+            z_vehicles_flat,
+            self.max_vehicles * self.N,
+            3
+        )
+        y_veh = np.ones((self.max_vehicles * self.N, 1))*self.vehicle_cost_primitive
+
         # 3. Evaluate f_sup
         # This returns an [N x 1] vector of costs (one for each time step)
         fsup_vec = self.f_sup(
             ego_traj,
             Z_ped, y_ped, self.p_ped,
+            Z_veh, y_veh, self.p_veh,
             ego_lane_pts, ca.DM.ones(self.N, 1) * self.egolane_cost_primitive, self.p_el, # Ego lane
             opp_lane_pts, ca.DM.ones(self.N, 1) * self.opplane_cost_primitive, self.p_ol,  # Opp lane
-            alpha_el, alpha_ol, alpha_ped # pre-computed symbolix kernel
+            alpha_el, alpha_ol, alpha_ped, alpha_veh # pre-computed symbolix kernel
         )
 
         # 4. Convert vector to scalar for optimization
@@ -575,6 +614,31 @@ class pcm_node(Node):
             y_ped = np.ones((self.max_pedestrians * self.N, 1))*self.pedestrian_cost_primitive
             alpha_ped = np.linalg.solve(K, y_ped)
 
+            # Filling up the objects with numeric values from inputs        
+            p_veh = np.ones((self.max_vehicles * self.N, 3)) * 1000
+
+            if hasattr(self, 'vehicles'):
+                for i, obj in enumerate(self.vehicles[:self.max_vehicles]):
+                    x_obj = obj.predicted_path[:self.N, 0]
+                    y_obj = obj.predicted_path[:self.N, 1]
+
+                    Z_i = np.column_stack([
+                        np.array(x_obj).flatten(),
+                        np.array(y_obj).flatten(),
+                        np.array(self.t).flatten()
+                    ])
+
+                    start = i * self.N
+                    end = (i + 1) * self.N
+
+                    p_veh[start:end, :] = Z_i
+
+            K = self.k(ca.DM(p_veh), ca.DM(p_veh), self.p_veh).full()
+            K += np.eye(K.shape[0])        
+
+            y_veh = np.ones((self.max_vehicles * self.N, 1))*self.vehicle_cost_primitive
+            alpha_veh = np.linalg.solve(K, y_veh)
+
             c_ego = self.c_el # ego predicted path from external component (in this case, follow ego lane)
 
             self.p_numeric = np.concatenate([
@@ -583,7 +647,9 @@ class pcm_node(Node):
                 self.c_el, # 5-8
                 self.c_ol, # 9-12
                 alpha_ped.reshape(-1), #13:N*max_ped
-                p_obj.reshape(-1, order='F') 
+                p_obj.reshape(-1, order='F'),
+                alpha_veh.reshape(-1), #13:N*max_ped
+                p_veh.reshape(-1, order='F') 
             ]).flatten()
 
             # Variable Bounds (lbx, ubx)
