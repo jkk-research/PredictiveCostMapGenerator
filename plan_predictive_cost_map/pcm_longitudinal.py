@@ -58,25 +58,23 @@ class pcm_node(Node):
         self.vehicles = []
         self.pedestrians = []
 
-        self.lock = threading.Lock()
-
         self.time_history = []
         self.c_el_history = []
 
         # 1. Initialize Horizon and Symbols
-        self.dt = 0.2
-        self.tau_h = 4.0
+        self.dt = 0.1
+        self.tau_h = 2.0
         self.N = int(self.tau_h/self.dt)
         self.t = ca.vertcat(*[self.dt * (i+1) for i in range(self.N)])        
         self.M = 3  # longitudinal velocity coefficients
 
-        self.ego_state = EgoState(0,0,0,0,0)
+        self.ego_state = EgoState(13.0,0,0,0,0)
 
         self.c_el = [0, 0, 0, 0]
         self.c_ol = [0, 0, 0, 0]
 
-        self.p_ped = [math.exp(0.0), math.exp(2.0), math.exp(0.5), math.exp(0.25)]
-        self.p_veh = [math.exp(0.0), math.exp(1.5), math.exp(1.08), math.exp(1.0)]
+        self.p_ped = [math.exp(-1.0), math.exp(1.0), math.exp(0.0), math.exp(1.0)]
+        self.p_veh = [math.exp(-1.0), math.exp(1.0), math.exp(1.5), math.exp(0.0)]
         self.p_el = [math.exp(-1.0), math.exp(1.0), math.exp(0.0), math.exp(-100)]
         self.p_ol = [math.exp(-1.0), math.exp(1.0), math.exp(-0.1), math.exp(-3)]
 
@@ -94,6 +92,11 @@ class pcm_node(Node):
         self.vehicle_cost_primitive = 1.0
         self.opplane_cost_primitive = -0.2
         self.egolane_cost_primitive = -1.0
+
+        self.replan = True
+        self.replan_timer = 0.0
+        self.c_numeric = np.zeros(self.M)
+        self.c_vel = ca.vertcat(self.ego_state.vx, self.c_numeric)
 
         # symbolic definitions and Casadi optimization setup 
         self.c_sym = ca.MX.sym('c', self.M)              
@@ -123,13 +126,13 @@ class pcm_node(Node):
         # Safety cost constraint
         _, fsup_vec = self.cost_sup(self.c_sym, self.p_sym)
 
-
         # Stack all nonlinear constraints
-        self.g = ca.vertcat(
+        #self.g = g_vx_lower
+        self.g =  ca.vertcat(
             g_ax_upper,
             g_ax_lower,
-            g_ay_upper,
-            g_ay_lower,
+            #g_ay_upper,
+            #g_ay_lower,
             g_vx_lower
         )
 
@@ -146,15 +149,15 @@ class pcm_node(Node):
         # 2. Define Weights
         # weight_safety: Keep the car away from objects/lane bounds
         # weight_vel: Keep the car at the target speed
-        w_safety = 0.95
-        w_vel = 0.05 
+        w_safety = 0.9
+        w_vel = 0.1 
         w_ay = 0.0
-        w_ax = 0.01
-        w_crash = 50.0
+        w_ax = 0.0
+        w_crash = 500.0
         
         # 3. Combine into final Objective
         # We also keep the regularization for steering smoothness (c_lat)
-        obj = (w_safety * cost_safety) + (w_vel * cost_velocity) + (w_ay * cost_ay) + (w_ax * cost_ax) + (w_crash * cost_crash)
+        obj = (w_safety * cost_safety) + (w_vel * cost_velocity) + (w_ax * cost_ax)# + (w_ay * cost_ay) + (w_ax * cost_ax) + (w_crash * cost_crash)
 
         # 6. Setup and Solve NLP
         nlp = {'x': self.c_sym, 'f': obj, 'g': self.g, 'p': self.p_sym}
@@ -211,72 +214,70 @@ class pcm_node(Node):
         return ca.log(1 + ca.exp(beta*x))/beta
 
     def ego_callback(self, input_msg):
-        with self.lock:
-            self.ego_state = EgoState(input_msg.twist.twist.linear.x, input_msg.accel.accel.linear.x, input_msg.accel.accel.linear.y, input_msg.twist.twist.angular.z, input_msg.tire_angle_front)
+        self.ego_state = EgoState(input_msg.twist.twist.linear.x, input_msg.accel.accel.linear.x, input_msg.accel.accel.linear.y, input_msg.twist.twist.angular.z, input_msg.tire_angle_front)
 
     def scenario_callback(self, input_msg):
-        with self.lock:
-            # this callback maps the input trajectory to the internal interface
-            if hasattr(self, 'vehicles'):
-                self.vehicles.clear()
-            if hasattr(self, 'pedestrians'):
-                self.pedestrians.clear()
+        # this callback maps the input trajectory to the internal interface
+        if hasattr(self, 'vehicles'):
+            self.vehicles.clear()
+        if hasattr(self, 'pedestrians'):
+            self.pedestrians.clear()
 
-            for obj in input_msg.local_moving_objects.objects:
-                pose = obj.kinematics.initial_pose_with_covariance.pose
-                twist = obj.kinematics.initial_twist_with_covariance.twist
-                accel = obj.kinematics.initial_acceleration_with_covariance.accel
-                x = pose.position.x
-                y = pose.position.y
-                type = obj.classification[0].label
+        for obj in input_msg.local_moving_objects.objects:
+            pose = obj.kinematics.initial_pose_with_covariance.pose
+            twist = obj.kinematics.initial_twist_with_covariance.twist
+            accel = obj.kinematics.initial_acceleration_with_covariance.accel
+            x = pose.position.x
+            y = pose.position.y
+            type = obj.classification[0].label
 
-                # Orientation is quaternion — convert to yaw (theta)
-                q = pose.orientation
-                theta = self.quaternion_to_yaw(q)
+            # Orientation is quaternion — convert to yaw (theta)
+            q = pose.orientation
+            theta = self.quaternion_to_yaw(q)
 
-                vx = twist.linear.x
-                ax = accel.linear.x
+            vx = twist.linear.x
+            ax = accel.linear.x
 
-                if math.sqrt(x**2+y**2) < 150 and x >= -150:
-                    if type == 7:
-                        # Extract path ONLY for pedestrians
-                        path_points = []
-                        if obj.kinematics.predicted_paths:
-                            first_path = obj.kinematics.predicted_paths[0]
-                            for path_pose in first_path.path:
-                                path_points.append((path_pose.position.x, path_pose.position.y))
-                        
-                        # Explicitly pass the parsed path
-                        self.pedestrians.append(
-                            ObjectState(
-                                x=x, 
-                                y=y, 
-                                theta=theta, 
-                                vx=vx, 
-                                ax=ax, 
-                                type=type, 
-                                predicted_path=np.array(path_points) if path_points else np.empty((0, 2))
-                            )
+            if math.sqrt(x**2+y**2) < 150 and x >= -150:
+                if type == 7:
+                    # Extract path ONLY for pedestrians
+                    path_points = []
+                    if obj.kinematics.predicted_paths:
+                        first_path = obj.kinematics.predicted_paths[0]
+                        for path_pose in first_path.path:
+                            path_points.append((path_pose.position.x, path_pose.position.y))
+                    
+                    # Explicitly pass the parsed path
+                    self.pedestrians.append(
+                        ObjectState(
+                            x=x, 
+                            y=y, 
+                            theta=theta, 
+                            vx=vx, 
+                            ax=ax, 
+                            type=type, 
+                            predicted_path=np.array(path_points) if path_points else np.empty((0, 2))
                         )
-                    else:
-                        path_points = []
-                        if obj.kinematics.predicted_paths:
-                            first_path = obj.kinematics.predicted_paths[0]
-                            for path_pose in first_path.path:
-                                path_points.append((path_pose.position.x, path_pose.position.y))
-                        
-                        # Explicitly pass the parsed path
-                        self.vehicles.append(
-                            ObjectState(
-                                x=x, 
-                                y=y, 
-                                theta=theta, 
-                                vx=vx, 
-                                ax=ax, 
-                                type=type, 
-                                predicted_path=np.array(path_points) if path_points else np.empty((0, 2))
-                            )
+                    )
+                else:
+                    path_points = []
+                    if obj.kinematics.predicted_paths:
+                        first_path = obj.kinematics.predicted_paths[0]
+                        for path_pose in first_path.path:
+                            path_points.append((path_pose.position.x, path_pose.position.y))
+                    
+                    # Explicitly pass the parsed path
+                    self.vehicles.append(
+                        ObjectState(
+                            x=x, 
+                            y=y, 
+                            theta=theta, 
+                            vx=vx, 
+                            ax=ax, 
+                            type=type, 
+                            predicted_path=np.array(path_points) if path_points else np.empty((0, 2))
                         )
+                    )
 
             # lanes
             # Ego lane
@@ -572,88 +573,88 @@ class pcm_node(Node):
 
 
     def callback(self):
-        with self.lock:
-            t1 = default_timer()   
+        t1 = default_timer()   
 
-            now = t1
-            self.last_exec = getattr(self, 'last_exec', now)
+        now = t1
+        self.last_exec = getattr(self, 'last_exec', now)
 
-            if now - self.last_exec < self.timer_period:
-                return
+        if now - self.last_exec < self.timer_period:
+            return
 
-            self.last_exec = now
+        self.last_exec = now
 
-            # Initial Guess (Warm start)
-            if not hasattr(self, 'last_c_opt'): self.last_c_opt = np.zeros(self.M)    
+        # Initial Guess (Warm start)
+        if not hasattr(self, 'last_c_opt'): self.last_c_opt = np.zeros(self.M)    
+    
+        # Ensure we have lane data before proceeding
+        if not hasattr(self, 'c_el') or np.all(np.array(self.c_el) == 0):
+            self.get_logger().warn("Waiting for lane data...")
+            return
         
-            # Ensure we have lane data before proceeding
-            if not hasattr(self, 'c_el') or np.all(np.array(self.c_el) == 0):
-                self.get_logger().warn("Waiting for lane data...")
-                return
-            
-            # Filling up the objects with numeric values from inputs        
-            p_obj = np.ones((self.max_pedestrians * self.N, 3)) * 1000
+        # Filling up the objects with numeric values from inputs        
+        p_obj = np.ones((self.max_pedestrians * self.N, 3)) * 1000
 
-            if hasattr(self, 'pedestrians'):
-                for i, obj in enumerate(self.pedestrians[:self.max_pedestrians]):
-                    x_obj = obj.predicted_path[:self.N, 0]
-                    y_obj = obj.predicted_path[:self.N, 1]
+        if hasattr(self, 'pedestrians'):
+            for i, obj in enumerate(self.pedestrians[:self.max_pedestrians]):
+                x_obj = obj.predicted_path[:self.N, 0]
+                y_obj = obj.predicted_path[:self.N, 1]
 
-                    Z_i = np.column_stack([
-                        np.array(x_obj).flatten(),
-                        np.array(y_obj).flatten(),
-                        np.array(self.t).flatten()
-                    ])
+                Z_i = np.column_stack([
+                    np.array(x_obj).flatten(),
+                    np.array(y_obj).flatten(),
+                    np.array(self.t).flatten()
+                ])
 
-                    start = i * self.N
-                    end = (i + 1) * self.N
+                start = i * self.N
+                end = (i + 1) * self.N
 
-                    p_obj[start:end, :] = Z_i
+                p_obj[start:end, :] = Z_i
 
-            K = self.k(ca.DM(p_obj), ca.DM(p_obj), self.p_ped).full()
-            K += np.eye(K.shape[0])        
+        K = self.k(ca.DM(p_obj), ca.DM(p_obj), self.p_ped).full()
+        K += np.eye(K.shape[0])        
 
-            y_ped = np.ones((self.max_pedestrians * self.N, 1))*self.pedestrian_cost_primitive
-            alpha_ped = np.linalg.solve(K, y_ped)
+        y_ped = np.ones((self.max_pedestrians * self.N, 1))*self.pedestrian_cost_primitive
+        alpha_ped = np.linalg.solve(K, y_ped)
 
-            # Filling up the objects with numeric values from inputs        
-            p_veh = np.ones((self.max_vehicles * self.N, 3)) * 1000
+        # Filling up the objects with numeric values from inputs        
+        p_veh = np.ones((self.max_vehicles * self.N, 3)) * 1000
 
-            if hasattr(self, 'vehicles'):
-                for i, obj in enumerate(self.vehicles[:self.max_vehicles]):
-                    x_obj = obj.predicted_path[:self.N, 0]
-                    y_obj = obj.predicted_path[:self.N, 1]
+        if hasattr(self, 'vehicles'):
+            for i, obj in enumerate(self.vehicles[:self.max_vehicles]):
+                x_obj = obj.predicted_path[:self.N, 0]
+                y_obj = obj.predicted_path[:self.N, 1]
 
-                    Z_i = np.column_stack([
-                        np.array(x_obj).flatten(),
-                        np.array(y_obj).flatten(),
-                        np.array(self.t).flatten()
-                    ])
+                Z_i = np.column_stack([
+                    np.array(x_obj).flatten(),
+                    np.array(y_obj).flatten(),
+                    np.array(self.t).flatten()
+                ])
 
-                    start = i * self.N
-                    end = (i + 1) * self.N
+                start = i * self.N
+                end = (i + 1) * self.N
 
-                    p_veh[start:end, :] = Z_i
+                p_veh[start:end, :] = Z_i
 
-            K = self.k(ca.DM(p_veh), ca.DM(p_veh), self.p_veh).full()
-            K += np.eye(K.shape[0])        
+        K = self.k(ca.DM(p_veh), ca.DM(p_veh), self.p_veh).full()
+        K += np.eye(K.shape[0])        
 
-            y_veh = np.ones((self.max_vehicles * self.N, 1))*self.vehicle_cost_primitive
-            alpha_veh = np.linalg.solve(K, y_veh)
+        y_veh = np.ones((self.max_vehicles * self.N, 1))*self.vehicle_cost_primitive
+        alpha_veh = np.linalg.solve(K, y_veh)
 
-            c_ego = self.c_el # ego predicted path from external component (in this case, follow ego lane)
+        c_ego = self.c_el # ego predicted path from external component (in this case, follow ego lane)
 
-            self.p_numeric = np.concatenate([
-                np.array([self.ego_state.vx]), # 0
-                c_ego, # 1-4
-                self.c_el, # 5-8
-                self.c_ol, # 9-12
-                alpha_ped.reshape(-1), #13:N*max_ped
-                p_obj.reshape(-1, order='F'),
-                alpha_veh.reshape(-1), #13:N*max_ped
-                p_veh.reshape(-1, order='F') 
-            ]).flatten()
+        self.p_numeric = np.concatenate([
+            np.array([self.ego_state.vx]), # 0
+            c_ego, # 1-4
+            self.c_el, # 5-8
+            self.c_ol, # 9-12
+            alpha_ped.reshape(-1), #13:N*max_ped
+            p_obj.reshape(-1, order='F'),
+            alpha_veh.reshape(-1), #13:N*max_ped
+            p_veh.reshape(-1, order='F') 
+        ]).flatten()
 
+        if self.replan:
             # Variable Bounds (lbx, ubx)
             lbc = -np.inf * np.ones(self.M)
             ubc =  np.inf * np.ones(self.M)
@@ -661,7 +662,7 @@ class pcm_node(Node):
             n_g = self.g.numel()
 
             lbg = -np.inf * np.ones(n_g)
-            ubg = np.zeros(5*self.N)
+            ubg = np.zeros(n_g)
 
             if not hasattr(self, 'last_lam_g'):
                 self.last_lam_g = np.zeros(n_g)
@@ -670,8 +671,8 @@ class pcm_node(Node):
                 self.last_lam_x = np.zeros(self.M)
 
             sol = self.solver(x0=self.last_c_opt, lam_x0=self.last_lam_x, lam_g0=self.last_lam_g, lbx=lbc, ubx=ubc, lbg=lbg, ubg=ubg, p=self.p_numeric)
-            c_numeric = sol['x']
-            self.last_c_opt = c_numeric.full().flatten()
+            self.c_numeric = sol['x']
+            self.last_c_opt = self.c_numeric.full().flatten()
             self.last_lam_x = sol['lam_x'].full()
             self.last_lam_g = sol['lam_g'].full()
 
@@ -682,59 +683,78 @@ class pcm_node(Node):
                 f"iterations: {stats['iter_count']}"
             )
 
-            # Evaluate f_sup_vec (= g_cost) for the optimized solution
-            f_sup_vec_numeric = self.fsup_eval(c_numeric, self.p_numeric)
+            self.replan = False
+            self.replan_timer += self.timer_period               
+            self.c_vel = ca.vertcat(self.ego_state.vx, self.c_numeric)
 
-            # Convert CasADi DM -> NumPy array for printing
-            f_sup_vec_numeric = np.array(f_sup_vec_numeric.full()).flatten()
+        # Evaluate f_sup_vec (= g_cost) for the optimized solution
+        f_sup_vec_numeric = self.fsup_eval(self.c_numeric, self.p_numeric)
 
-            self.get_logger().info(f"f_sup_vec: {f_sup_vec_numeric}")
+        # Convert CasADi DM -> NumPy array for printing
+        f_sup_vec_numeric = np.array(f_sup_vec_numeric.full()).flatten()
 
-            c_vel = ca.vertcat(self.ego_state.vx, c_numeric)
-
-            velocityTarget = max(
-                self.f_ego_vx(self.dt, c_vel),
-                0
+        if np.any(f_sup_vec_numeric > 0.0) or self.replan_timer > 0.0: 
+            self.replan = True
+            self.replan_timer = 0.0
+        else:
+            self.replan = False
+            self.replan_timer += self.timer_period
+            self.get_logger().info(
+                f"Maximum value: {np.max(f_sup_vec_numeric)}"
             )
 
-            control_cmd_msg = Control()
-            control_cmd_msg.stamp = self.get_clock().now().to_msg()
-            control_cmd_msg.longitudinal.velocity = float(velocityTarget)
-            self.cmd_pub.publish(control_cmd_msg)
+        self.get_logger().info(f"f_sup_vec: {f_sup_vec_numeric}")
+        self.get_logger().info(f"replan_timer: {self.replan_timer:.2f}s, replan: {self.replan}")
 
-            # getting the trajectory
-            res = self.traj_eval(c_numeric, self.p_numeric)
+        velocityTarget = max(
+            self.f_ego_vx(5*self.timer_period, self.c_vel),
+            0
+        )
 
-            x_final = res[0].full().flatten()
-            y_final = res[1].full().flatten()
-            vx_final = res[2].full().flatten()
-
-
-            # publishing the trajectory
-            trajectory_msg = Trajectory()
-            trajectory_msg.header.stamp = self.get_clock().now().to_msg()
-            trajectory_msg.header.frame_id = "base_link"
-
-            for i in range(len(x_final)):
-                pt = TrajectoryPoint()
-
-                # position
-                pt.pose.position.x = float(x_final[i])
-                pt.pose.position.y = float(y_final[i])
-                pt.pose.position.z = 0.0     
-
-                # velocity      
-                pt.longitudinal_velocity_mps = float(vx_final[i])
-
-                # append point
-                trajectory_msg.points.append(pt)
-
-            # publish
-            self.trajectory_pub.publish(trajectory_msg)
-            
-            t_end = default_timer()
-            self.get_logger().info(f"Loop time: {t_end-t1:.4f}s")
+        self.get_logger().info(
+            f"ego_vx={self.ego_state.vx}, "
+            f"target_vx={velocityTarget}, "
+            f"replan={self.replan}"
+        )
         
+        control_cmd_msg = Control()
+        control_cmd_msg.stamp = self.get_clock().now().to_msg()
+        control_cmd_msg.longitudinal.velocity = float(velocityTarget)
+        self.cmd_pub.publish(control_cmd_msg)
+
+        # getting the trajectory
+        res = self.traj_eval(self.c_numeric, self.p_numeric)
+
+        x_final = res[0].full().flatten()
+        y_final = res[1].full().flatten()
+        vx_final = res[2].full().flatten()
+
+
+        # publishing the trajectory
+        trajectory_msg = Trajectory()
+        trajectory_msg.header.stamp = self.get_clock().now().to_msg()
+        trajectory_msg.header.frame_id = "base_link"
+
+        for i in range(len(x_final)):
+            pt = TrajectoryPoint()
+
+            # position
+            pt.pose.position.x = float(x_final[i])
+            pt.pose.position.y = float(y_final[i])
+            pt.pose.position.z = 0.0     
+
+            # velocity      
+            pt.longitudinal_velocity_mps = float(vx_final[i])
+
+            # append point
+            trajectory_msg.points.append(pt)
+
+        # publish
+        self.trajectory_pub.publish(trajectory_msg)
+        
+        t_end = default_timer()
+        self.get_logger().info(f"Loop time: {t_end-t1:.4f}s")
+    
 
 
 # def main(args=None):

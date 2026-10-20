@@ -60,8 +60,8 @@ class pcm_node(Node):
         self.c_el_history = []
 
         # 1. Initialize Horizon and Symbols
-        self.dt = 0.15
-        self.tau_h = 3.0
+        self.dt = 0.1
+        self.tau_h = 2.0
         self.N = int(self.tau_h/self.dt)
         self.t = ca.vertcat(*[self.dt * (i+1) for i in range(self.N)])        
         self.M = 3  # longitudinal velocity coefficients
@@ -71,8 +71,8 @@ class pcm_node(Node):
         self.c_el = [0, 0, 0, 0]
         self.c_ol = [0, 0, 0, 0]
 
-        self.p_ov = [math.exp(0.0), math.exp(1.5), math.exp(1.08), math.exp(1.0)]
-        self.p_fv = [math.exp(0.0), math.exp(1.5), math.exp(2.0), math.exp(2.0)]
+        self.p_ov = [math.exp(-1.0), math.exp(1.5), math.exp(1.08), math.exp(1.0)]
+        self.p_fv = [math.exp(-1.0), math.exp(1.5), math.exp(2.0), math.exp(2.0)]
         self.p_el = [math.exp(-1.0), math.exp(1.0), math.exp(0.0), math.exp(-100)]
         self.p_ol = [math.exp(-1.0), math.exp(1.0), math.exp(-0.1), math.exp(-3)]
 
@@ -139,9 +139,9 @@ class pcm_node(Node):
         # 2. Define Weights
         # weight_safety: Keep the car away from objects/lane bounds
         # weight_vel: Keep the car at the target speed
-        w_safety = 0.65
-        w_vel = 0.15 
-        w_ay = 0.01
+        w_safety = 0.9
+        w_vel = 0.1
+        w_ay = 0.0
         
         # 3. Combine into final Objective
         # We also keep the regularization for steering smoothness (c_lat)
@@ -180,7 +180,7 @@ class pcm_node(Node):
             )
 
         # create publishers/subscribers
-        self.timer_period = 1.0  # [s]
+        self.timer_period = 0.05  # [s]
         self.timer = self.create_timer(self.timer_period, self.callback)
 
         self.cmd_pub = self.create_publisher(Control, '/control/command/control_cmd', 30)
@@ -296,6 +296,9 @@ class pcm_node(Node):
 
     def f_dyn_(self, X, Z, y, p, sigma_n, alpha):      
         return (self.k(X, Z, p) @ alpha) - 0.5
+    
+    def smooth_max(self,a,b,eps=0.01):
+        return 0.5*(a+b+ca.sqrt((a-b)**2+eps))
 
     def f_sup(self, X,
                     Z_ov, y_ov, p_ov,
@@ -303,12 +306,13 @@ class pcm_node(Node):
                     Z_stat, y_stat, p_stat,
                     Z_ol, y_ol, p_ol,
                     alpha_ov, alpha_el, alpha_ol, alpha_ev):
-        avg_dyn = (self.f_dyn(X, Z_ev, y_ev, p_fv, 1, alpha_ev) + 
-                   self.f_dyn(X, Z_ov, y_ov, p_ov, 1, alpha_ov)) /2
+        avg_dyn = self.smooth_max( self.f_dyn(X, Z_ev, y_ev, p_fv, 1, alpha_ev),
+                        self.f_dyn(X, Z_ov, y_ov, p_ov, 1, alpha_ov))
 
         min_dyn = ca.fmin(self.f_dyn_(X, Z_stat, y_stat, p_stat, 1, alpha_el),
                         self.f_dyn_(X, Z_ol, y_ol, p_ol, 1, alpha_ol))
-        return ca.fmax(avg_dyn, min_dyn)
+        
+        return self.smooth_max(avg_dyn,min_dyn)
 
     def y_curve(self, t, c):
         # t: scalar or vector, c: 4-element vector of coefficients
@@ -428,14 +432,14 @@ class pcm_node(Node):
         alpha_fv = p[self.max_objs*self.N*3+10+self.max_objs*self.N+self.N*2+self.max_followedObjs*self.N*3:self.max_objs*self.N*3+10+self.max_objs*self.N+self.N*2+self.max_followedObjs*self.N*3+self.max_followedObjs*self.N]
 
         K_el = self.k(ego_lane_pts, ego_lane_pts, self.p_el)
-        K_el = K_el + ca.MX.eye(self.N)
+        K_el = K_el + 0.001**2 * ca.MX.eye(self.N)
 
         y_el = -ca.DM.ones(self.N, 1)
 
         alpha_el = ca.solve(K_el, y_el)
 
         K_ol = self.k(opp_lane_pts, opp_lane_pts, self.p_ol)
-        K_ol = K_ol + ca.MX.eye(self.N)
+        K_ol = K_ol + 0.001**2 * ca.MX.eye(self.N)
 
         y_ol = -0.2 * ca.DM.ones(self.N, 1)
 
@@ -462,7 +466,7 @@ class pcm_node(Node):
 
     def get_cost_vel(self, c_sym, p_sym):
         # self.target_vel should be defined in __init__, e.g., self.target_vel = 20.0
-        target_v = 13.0 
+        target_v = 13.0
         
         # Reconstruct the full 4-coefficient velocity vector
         # [v0, c_opt1, c_opt2, c_opt3]
@@ -561,13 +565,13 @@ class pcm_node(Node):
 
 
             K = self.k(ca.DM(ego_lane_pts), ca.DM(ego_lane_pts), self.p_el).full()
-            K += np.eye(K.shape[0])        
+            K = K + 0.001**2 * np.eye(K.shape[0])        
 
             y_el = np.ones((self.N, 1))*(-1)
             alpha_el = np.linalg.solve(K, y_el)
 
             K = self.k(ca.DM(opp_lane_pts), ca.DM(opp_lane_pts), self.p_ol).full()
-            K += np.eye(K.shape[0])        
+            K = K + 0.001**2 * np.eye(K.shape[0])        
 
             y_ol = np.ones((self.N, 1))*(-0.2)
             alpha_ol = np.linalg.solve(K, y_ol)
@@ -581,7 +585,7 @@ class pcm_node(Node):
                 alpha_oc.reshape(-1),
                 alpha_el.reshape(-1),
                 alpha_ol.reshape(-1),
-                p_followedObj.reshape(-1),
+                p_followedObj.reshape(-1, order='F'),
                 alpha_fv.reshape(-1)
             ]).flatten()
 
@@ -614,8 +618,8 @@ class pcm_node(Node):
 
             self.get_logger().info(f"f_sup_vec: {f_sup_vec_numeric}")
 
-            steeringAngleTarget = self.f_delta(0.05,c_numeric[0], self.ego_state.steeringAngle)
-            velocityTarget = self.f_ego_vx(0.05, ca.vertcat(self.ego_state.vx, c_numeric[self.N:]))
+            steeringAngleTarget = self.f_delta(0.2,c_numeric[0], self.ego_state.steeringAngle)
+            velocityTarget = self.f_ego_vx(0.2, ca.vertcat(self.ego_state.vx, c_numeric[self.N:]))
             steeringAngleTarget_next = steeringAngleTarget[0]
             velocityTarget_next = velocityTarget[0]
 
