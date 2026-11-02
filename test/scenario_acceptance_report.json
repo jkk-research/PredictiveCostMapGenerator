@@ -1,0 +1,373 @@
+[
+  {
+    "scenario": "highway_entry_costmap_data.mat",
+    "status": "FAIL",
+    "termination": "first_acceptance_failure",
+    "failures": [
+      {
+        "criterion": "progress",
+        "time_s": 33.15,
+        "detail": "No meaningful progress on a clear road for 15 seconds"
+      }
+    ],
+    "metrics": {
+      "simulated_seconds": 33.15,
+      "samples": 664,
+      "progress_fraction": 0.000763294908064892,
+      "maximum_cross_track_m": 0.0013991738928713436,
+      "maximum_jerk_mps3": 0.0,
+      "maximum_lateral_acceleration_mps2": 0.0,
+      "minimum_clearance_m": 85.42785839942637,
+      "intentional_excursion_observed": false,
+      "pedestrian_checks": 0,
+      "unjustified_stop_restart_cycles": 0,
+      "pedestrian_stopped_samples": 0
+    },
+    "coverage": {
+      "full_route": false,
+      "pedestrian_conflict_encountered": false,
+      "progress_status": "NOT_EVALUATED",
+      "overtaking_required": "Scenario-dependent; safe stopping alone does not satisfy progress"
+    },
+    "initial_speed_mps": 5.0,
+    "fallback_reasons": {
+      "waiting_for_simulator": 3,
+      "compiling_solver": 11,
+      "ready": 4,
+      "No fresh, validated plan is currently executable": 163,
+      "planning_deadline": 313
+    },
+    "limits": {
+      "ego_length": 4.5,
+      "ego_width": 2.0,
+      "ego_height": 1.5,
+      "road_tolerance": 0.15,
+      "maximum_acceleration": 3.5,
+      "maximum_deceleration": 5.5,
+      "maximum_lateral_acceleration": 3.5,
+      "maximum_jerk": 6.0,
+      "speed_tolerance": 0.5,
+      "progress_fraction": 0.9,
+      "return_to_path_tolerance": 0.75,
+      "maximum_unjustified_excursion_seconds": 3.0,
+      "maximum_clear_road_stall_seconds": 15.0
+    }
+  },
+  {
+    "scenario": "highway_other_vehicle_entering_costmap_data.mat",
+    "status": "FAIL",
+    "termination": "first_acceptance_failure",
+    "failures": [
+      {
+        "criterion": "smoothness",
+        "time_s": 2.05,
+        "detail": "Longitudinal jerk 92.39 m/s^3"
+      }
+    ],
+    "metrics": {
+      "simulated_seconds": 2.0500000000000003,
+      "samples": 42,
+      "progress_fraction": 0.0012419471885791325,
+      "maximum_cross_track_m": 0.00022837289007071604,
+      "maximum_jerk_mps3": 92.38785628302969,
+      "maximum_lateral_acceleration_mps2": 0.02547907867373551,
+      "minimum_clearance_m": 494.80495323218645,
+      "intentional_excursion_observed": false,
+      "pedestrian_checks": 0,
+      "unjustified_stop_restart_cycles": 0,
+      "pedestrian_stopped_samples": 0
+    },
+    "coverage": {
+      "full_route": false,
+      "pedestrian_conflict_encountered": false,
+      "progress_status": "NOT_EVALUATED",
+      "overtaking_required": "Scenario-dependent; safe stopping alone does not satisfy progress"
+    },
+    "initial_speed_mps": 5.0,
+    "fallback_reasons": {
+      "waiting_for_simulator": 25,
+      "compiling_solver": 19,
+      "ready": 3
+    },
+    "limits": {
+      "ego_length": 4.5,
+      "ego_width": 2.0,
+      "ego_height": 1.5,
+      "road_tolerance": 0.15,
+      "maximum_acceleration": 3.5,
+      "maximum_deceleration": 5.5,
+      "maximum_lateral_acceleration": 3.5,
+      "maximum_jerk": 6.0,
+      "speed_tolerance": 0.5,
+      "progress_fraction": 0.9,
+      "return_to_path_tolerance": 0.75,
+      "maximum_unjustified_excursion_seconds": 3.0,
+      "maximum_clear_road_stall_seconds": 15.0
+    }
+  },
+  {
+    "scenario": "occluded_pedestrian_costmap_data.mat",
+    "status": "FAIL",
+    "termination": "first_acceptance_failure",
+    "failures": [
+      {
+        "criterion": "smoothness",
+        "time_s": 3.5,
+        "detail": "Longitudinal jerk 50.16 m/s^3"
+      }
+    ],
+    "metrics": {
+      "simulated_seconds": 3.5,
+      "samples": 71,
+      "progress_fraction": 0.03236273637480046,
+      "maximum_cross_track_m": 0.225287104821291,
+      "maximum_jerk_mps3": 50.163434900803885,
+      "maximum_lateral_acceleration_mps2": 0.5269441030255329,
+      "minimum_clearance_m": null,
+      "intentional_excursion_observed": false,
+      "pedestrian_checks": 0,
+      "unjustified_stop_restart_cycles": 0,
+      "pedestrian_stopped_samples": 0
+    },
+    "coverage": {
+      "full_route": false,
+      "pedestrian_conflict_encountered": false,
+      "progress_status": "NOT_EVALUATED",
+      "overtaking_required": "Scenario-dependent; safe stopping alone does not satisfy progress"
+    },
+    "initial_speed_mps": 5.0,
+    "fallback_reasons": {
+      "waiting_for_simulator": 31,
+      "compiling_solver": 18,
+      "ready": 3,
+      "Maximum_WallTime_Exceeded": 19,
+      "No fresh, validated plan is currently executable": 1,
+      "planning_deadline": 3
+    },
+    "limits": {
+      "ego_length": 4.5,
+      "ego_width": 2.0,
+      "ego_height": 1.5,
+      "road_tolerance": 0.15,
+      "maximum_acceleration": 3.5,
+      "maximum_deceleration": 5.5,
+      "maximum_lateral_acceleration": 3.5,
+      "maximum_jerk": 6.0,
+      "speed_tolerance": 0.5,
+      "progress_fraction": 0.9,
+      "return_to_path_tolerance": 0.75,
+      "maximum_unjustified_excursion_seconds": 3.0,
+      "maximum_clear_road_stall_seconds": 15.0
+    }
+  },
+  {
+    "scenario": "occluded_pedestrian_crossing_costmap_data.mat",
+    "status": "FAIL",
+    "termination": "first_acceptance_failure",
+    "failures": [
+      {
+        "criterion": "smoothness",
+        "time_s": 2.9,
+        "detail": "Longitudinal jerk 118.41 m/s^3"
+      }
+    ],
+    "metrics": {
+      "simulated_seconds": 2.9000000000000004,
+      "samples": 59,
+      "progress_fraction": 0.0027601891270557476,
+      "maximum_cross_track_m": 8.704220753951907e-05,
+      "maximum_jerk_mps3": 118.40663532276005,
+      "maximum_lateral_acceleration_mps2": 0.0547432420002442,
+      "minimum_clearance_m": 25.0,
+      "intentional_excursion_observed": false,
+      "pedestrian_checks": 0,
+      "unjustified_stop_restart_cycles": 0,
+      "pedestrian_stopped_samples": 0
+    },
+    "coverage": {
+      "full_route": false,
+      "pedestrian_conflict_encountered": false,
+      "progress_status": "NOT_EVALUATED",
+      "overtaking_required": "Scenario-dependent; safe stopping alone does not satisfy progress"
+    },
+    "initial_speed_mps": 5.0,
+    "fallback_reasons": {
+      "waiting_for_simulator": 3,
+      "compiling_solver": 23,
+      "ready": 4,
+      "No fresh, validated plan is currently executable": 4
+    },
+    "limits": {
+      "ego_length": 4.5,
+      "ego_width": 2.0,
+      "ego_height": 1.5,
+      "road_tolerance": 0.15,
+      "maximum_acceleration": 3.5,
+      "maximum_deceleration": 5.5,
+      "maximum_lateral_acceleration": 3.5,
+      "maximum_jerk": 6.0,
+      "speed_tolerance": 0.5,
+      "progress_fraction": 0.9,
+      "return_to_path_tolerance": 0.75,
+      "maximum_unjustified_excursion_seconds": 3.0,
+      "maximum_clear_road_stall_seconds": 15.0
+    }
+  },
+  {
+    "scenario": "protected_left_occluded_with_oncoming_traffic_costmap_data.mat",
+    "status": "FAIL",
+    "termination": "first_acceptance_failure",
+    "failures": [
+      {
+        "criterion": "smoothness",
+        "time_s": 2.5,
+        "detail": "Longitudinal jerk 29.86 m/s^3"
+      }
+    ],
+    "metrics": {
+      "simulated_seconds": 2.5,
+      "samples": 51,
+      "progress_fraction": 0.004152626992576301,
+      "maximum_cross_track_m": 9.481746590208465e-06,
+      "maximum_jerk_mps3": 29.857576160817526,
+      "maximum_lateral_acceleration_mps2": 0.005991583050241381,
+      "minimum_clearance_m": 22.0,
+      "intentional_excursion_observed": false,
+      "pedestrian_checks": 0,
+      "unjustified_stop_restart_cycles": 0,
+      "pedestrian_stopped_samples": 0
+    },
+    "coverage": {
+      "full_route": false,
+      "pedestrian_conflict_encountered": false,
+      "progress_status": "NOT_EVALUATED",
+      "overtaking_required": "Scenario-dependent; safe stopping alone does not satisfy progress"
+    },
+    "initial_speed_mps": 5.0,
+    "fallback_reasons": {
+      "waiting_for_simulator": 2,
+      "compiling_solver": 19,
+      "ready": 3,
+      "No fresh, validated plan is currently executable": 4
+    },
+    "limits": {
+      "ego_length": 4.5,
+      "ego_width": 2.0,
+      "ego_height": 1.5,
+      "road_tolerance": 0.15,
+      "maximum_acceleration": 3.5,
+      "maximum_deceleration": 5.5,
+      "maximum_lateral_acceleration": 3.5,
+      "maximum_jerk": 6.0,
+      "speed_tolerance": 0.5,
+      "progress_fraction": 0.9,
+      "return_to_path_tolerance": 0.75,
+      "maximum_unjustified_excursion_seconds": 3.0,
+      "maximum_clear_road_stall_seconds": 15.0
+    }
+  },
+  {
+    "scenario": "roundabout_with_conflicting_traffic_costmap_data.mat",
+    "status": "FAIL",
+    "termination": "first_acceptance_failure",
+    "failures": [
+      {
+        "criterion": "stop_restart",
+        "time_s": 2.8,
+        "detail": "Stopped and restarted without a nearby real or virtual hazard"
+      }
+    ],
+    "metrics": {
+      "simulated_seconds": 2.8000000000000003,
+      "samples": 57,
+      "progress_fraction": 0.0074215565579853916,
+      "maximum_cross_track_m": 0.0022824216681428294,
+      "maximum_jerk_mps3": 3.806582531970508,
+      "maximum_lateral_acceleration_mps2": 0.20695713481953615,
+      "minimum_clearance_m": 213.69799595746773,
+      "intentional_excursion_observed": false,
+      "pedestrian_checks": 0,
+      "unjustified_stop_restart_cycles": 1,
+      "pedestrian_stopped_samples": 0
+    },
+    "coverage": {
+      "full_route": false,
+      "pedestrian_conflict_encountered": false,
+      "progress_status": "NOT_EVALUATED",
+      "overtaking_required": "Scenario-dependent; safe stopping alone does not satisfy progress"
+    },
+    "initial_speed_mps": 5.0,
+    "fallback_reasons": {
+      "waiting_for_simulator": 24,
+      "compiling_solver": 15,
+      "ready": 2
+    },
+    "limits": {
+      "ego_length": 4.5,
+      "ego_width": 2.0,
+      "ego_height": 1.5,
+      "road_tolerance": 0.15,
+      "maximum_acceleration": 3.5,
+      "maximum_deceleration": 5.5,
+      "maximum_lateral_acceleration": 3.5,
+      "maximum_jerk": 6.0,
+      "speed_tolerance": 0.5,
+      "progress_fraction": 0.9,
+      "return_to_path_tolerance": 0.75,
+      "maximum_unjustified_excursion_seconds": 3.0,
+      "maximum_clear_road_stall_seconds": 15.0
+    }
+  },
+  {
+    "scenario": "roundabout_with_traffic_and_pedestrian_costmap_data.mat",
+    "status": "FAIL",
+    "termination": "first_acceptance_failure",
+    "failures": [
+      {
+        "criterion": "stop_restart",
+        "time_s": 2.9,
+        "detail": "Stopped and restarted without a nearby real or virtual hazard"
+      }
+    ],
+    "metrics": {
+      "simulated_seconds": 2.9000000000000004,
+      "samples": 59,
+      "progress_fraction": 0.004584328087388658,
+      "maximum_cross_track_m": 0.001321278838652227,
+      "maximum_jerk_mps3": 2.195952123120079,
+      "maximum_lateral_acceleration_mps2": 0.1629236055116096,
+      "minimum_clearance_m": 85.63151103051881,
+      "intentional_excursion_observed": false,
+      "pedestrian_checks": 0,
+      "unjustified_stop_restart_cycles": 1,
+      "pedestrian_stopped_samples": 0
+    },
+    "coverage": {
+      "full_route": false,
+      "pedestrian_conflict_encountered": false,
+      "progress_status": "NOT_EVALUATED",
+      "overtaking_required": "Scenario-dependent; safe stopping alone does not satisfy progress"
+    },
+    "initial_speed_mps": 5.0,
+    "fallback_reasons": {
+      "waiting_for_simulator": 1,
+      "compiling_solver": 13,
+      "ready": 3
+    },
+    "limits": {
+      "ego_length": 4.5,
+      "ego_width": 2.0,
+      "ego_height": 1.5,
+      "road_tolerance": 0.15,
+      "maximum_acceleration": 3.5,
+      "maximum_deceleration": 5.5,
+      "maximum_lateral_acceleration": 3.5,
+      "maximum_jerk": 6.0,
+      "speed_tolerance": 0.5,
+      "progress_fraction": 0.9,
+      "return_to_path_tolerance": 0.75,
+      "maximum_unjustified_excursion_seconds": 3.0,
+      "maximum_clear_road_stall_seconds": 15.0
+    }
+  }
+]

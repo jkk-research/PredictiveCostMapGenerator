@@ -1,0 +1,55 @@
+pcm_planner:
+  ros__parameters:
+    planning_mode: combined
+    planning_rate: 5.0
+    horizon: 3.0
+    control_step: 0.05
+    cost_step: 0.1
+    gp_support_points: 48
+    road_support_points: 32
+    maximum_branches: 24
+    solve_budget: 0.15
+    planning_deadline: 0.4
+    maximum_plan_age: 1.5
+    maximum_iterations: 35
+    input_timeout: 0.5
+    maximum_acceleration: 3.0
+    maximum_deceleration: 5.0
+    maximum_lateral_acceleration: 3.0
+    maximum_jerk: 5.0
+    maximum_steering_rate: 0.5
+    jit: true
+    weight_safety: 5.0
+    weight_velocity: 1.0
+    weight_overspeed: 1.0
+    weight_underspeed: 1.0
+    weight_acceleration: 0.05
+    weight_positive_acceleration: 1.0
+    weight_braking_acceleration: 1.0
+    weight_lateral_acceleration: 0.1
+    weight_input_amplitude: 0.01
+    weight_steering: 0.1
+    weight_rate: 0.1
+    weight_terminal: 5.0
+    visualize_costmap: true
+    costmap_debug_rate: 1.0
+    costmap_resolution: 1.0
+
+mpc_tracker:
+  ros__parameters:
+    control_rate: 20.0
+    horizon: 0.75
+    time_step: 0.05
+    solve_budget: 0.02
+    maximum_reference_age: 2.0
+    input_timeout: 0.25
+
+safety_supervisor:
+  ros__parameters:
+    control_rate: 20.0
+    input_timeout: 0.25
+    command_timeout: 0.15
+    maximum_reference_age: 2.0
+    maximum_deceleration: 5.0
+    maximum_jerk: 5.0
+    virtual_emergency_probability: 0.25

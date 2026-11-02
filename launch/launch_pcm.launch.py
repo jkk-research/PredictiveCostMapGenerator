@@ -6,7 +6,7 @@ def generate_launch_description():
 
     pcm = Node(
             package='plan_predictive_cost_map',
-            executable='pcm',
+            executable='pcm_longitudinal',
             parameters=[
             {"/pcm/weights/weight_costmap": 0.65}, ],
             name='pcm_longitudinal',

@@ -1,3 +1,7 @@
 pandas
 matplotlib
 scipy
+numpy
+casadi>=3.6,<4
+shapely>=2,<3
+osqp>=1.0,<2

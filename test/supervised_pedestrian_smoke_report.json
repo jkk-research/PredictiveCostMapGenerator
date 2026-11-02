@@ -1,0 +1,87 @@
+[
+  {
+    "scenario": "occluded_pedestrian_costmap_data.mat",
+    "status": "FAIL",
+    "termination": "first_acceptance_failure",
+    "failures": [
+      {
+        "criterion": "smoothness",
+        "time_s": 2.35,
+        "detail": "Longitudinal jerk 12.51 m/s^3"
+      }
+    ],
+    "metrics": {
+      "simulated_seconds": 2.35,
+      "samples": 83,
+      "progress_fraction": 0.05509329506246424,
+      "maximum_cross_track_m": 0.20923249195016555,
+      "maximum_jerk_mps3": 12.508657059609956,
+      "maximum_lateral_acceleration_mps2": 3.3658174255330087,
+      "minimum_clearance_m": null,
+      "intentional_excursion_observed": false,
+      "pedestrian_checks": 0,
+      "unjustified_stop_restart_cycles": 0,
+      "pedestrian_stopped_samples": 0
+    },
+    "coverage": {
+      "full_route": false,
+      "pedestrian_conflict_encountered": false,
+      "progress_status": "NOT_EVALUATED",
+      "overtaking_required": "Scenario-dependent; safe stopping alone does not satisfy progress"
+    },
+    "initial_speed_mps": 13.88888888888889,
+    "planning_mode": "combined",
+    "architecture": "trajectory_planner_mpc_tracker_safety_supervisor",
+    "fallback_reasons": {
+      "waiting_for_simulator": 89,
+      "ready": 2,
+      "Waiting for a trajectory": 73
+    },
+    "limits": {
+      "ego_length": 4.5,
+      "ego_width": 2.0,
+      "ego_height": 1.5,
+      "road_tolerance": 0.15,
+      "maximum_acceleration": 3.5,
+      "maximum_deceleration": 5.5,
+      "maximum_lateral_acceleration": 3.5,
+      "maximum_jerk": 6.0,
+      "speed_tolerance": 0.5,
+      "progress_fraction": 0.9,
+      "return_to_path_tolerance": 0.75,
+      "maximum_unjustified_excursion_seconds": 3.0,
+      "maximum_clear_road_stall_seconds": 15.0
+    },
+    "safety_interventions": {},
+    "last_planner_status": {
+      "state": "trajectory_published",
+      "fit_ms": 2.315744997758884,
+      "total_ms": 245.22835799871245,
+      "solve_ms": 170.57525799828,
+      "solver_status": "Maximum_WallTime_Exceeded",
+      "iterations": 1,
+      "objective": {
+        "positive_acceleration": 0.0,
+        "braking_acceleration": 6.79474516398097e-05,
+        "lateral_acceleration": 0.00021103614118752603,
+        "steering_amplitude": 1.1913579429423094e-06,
+        "drive_amplitude": 0.0027768878170068025,
+        "input_rates": 0.0008777195053173494,
+        "gp_risk": 4.880734248727147e-06,
+        "overspeed": 0.0,
+        "underspeed": 0.0003575768903165212,
+        "crash": 0.0,
+        "terminal": 3.142713315611842e-05
+      },
+      "input_fresh": false,
+      "planning_mode": "combined",
+      "trajectory_available": true,
+      "planning_rate": 5.0,
+      "horizon": 3.0,
+      "planning_deadline_ms": 400.0
+    },
+    "final_command_publishers": [
+      "safety_supervisor"
+    ]
+  }
+]
