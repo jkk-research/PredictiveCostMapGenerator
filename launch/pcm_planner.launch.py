@@ -43,6 +43,6 @@ def generate_launch_description():
         DeclareLaunchArgument('start_tracker', default_value='true'),
         DeclareLaunchArgument('start_simulator', default_value='false'),
         DeclareLaunchArgument('scenario_file', default_value=PathJoinSubstitution([
-            FindPackageShare('simulator'), 'scenario_files', 'occluded_pedestrian_costmap_data.mat'])),
+            FindPackageShare('scenario_generation'), 'scenario_files', 'occluded_pedestrian_costmap_data.mat'])),
         OpaqueFunction(function=launch_nodes),
     ])

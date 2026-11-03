@@ -80,11 +80,12 @@ def test_live_control_loop_and_stale_input(slow_optimizer):
     os.environ['ROS_LOCALHOST_ONLY'] = '1'
     root = Path(__file__).resolve().parents[3]
     simulator = root / 'install/simulator/lib/simulator/simulator'
+    scenario_generator = root / 'install/scenario_generation/lib/scenario_generation/scenario_generator'
     planner = root / 'install/plan_predictive_cost_map/lib/plan_predictive_cost_map/pcm_planner'
     tracker = root / 'install/plan_predictive_cost_map/lib/plan_predictive_cost_map/mpc_tracker'
     supervisor = root / 'install/plan_predictive_cost_map/lib/plan_predictive_cost_map/safety_supervisor'
-    if not all(path.is_file() for path in (simulator, planner, tracker, supervisor)):
-        pytest.skip('Build simulator and plan_predictive_cost_map before live tests')
+    if not all(path.is_file() for path in (simulator, scenario_generator, planner, tracker, supervisor)):
+        pytest.skip('Build scenario_generation, simulator and plan_predictive_cost_map before live tests')
     scenario_file = root / 'src/scenario_files/occluded_pedestrian_crossing_costmap_data.mat'
     full = os.environ.get('PCM_FULL_BENCHMARK') == '1'
     rclpy.init()
@@ -99,6 +100,9 @@ def test_live_control_loop_and_stale_input(slow_optimizer):
         node.create_subscription(Control, '/control/command/control_cmd', lambda value: commands.append((time.monotonic(), value)), 100),
         node.create_subscription(Ego, '/ego', states.append, 100),
     ]
+    generation = subprocess.Popen([str(scenario_generator), '--ros-args',
+        '-p', 'scenario_file:=' + str(scenario_file), '-p', 'generate_virtual_objects:=false'],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True)
     simulation = subprocess.Popen([str(simulator), '--ros-args', '-p', 'scenario_file:=' + str(scenario_file),
         '-p', 'vehicle_model:=dynamic', '-p', 'command_mode:=acceleration',
         '-p', 'use_internal_controller:=false', '-p', 'simulation_time_stamps:=true',
@@ -118,7 +122,7 @@ def test_live_control_loop_and_stale_input(slow_optimizer):
         deadline = time.monotonic() + (240 if full else 40)
         tracking_started = None
         while time.monotonic() < deadline:
-            if any(process.poll() is not None for process in (planning, tracking, safety, simulation)):
+            if any(process.poll() is not None for process in (generation, planning, tracking, safety, simulation)):
                 raise AssertionError('A split-stack node exited unexpectedly')
             rclpy.spin_once(node, timeout_sec=.02)
             if statuses and statuses[-1].get('command_valid') and trajectories:
@@ -128,7 +132,7 @@ def test_live_control_loop_and_stale_input(slow_optimizer):
         assert tracking_started, (planning_statuses[-3:], statuses[-3:])
         assert clouds, 'Fitted GP cloud was not published'
         assert {'cost', 'pedestrian', 'target', 'risk_limit', 'prediction_time'} <= {field.name for field in clouds[-1].fields}
-        assert all(message.points and message.header.frame_id == 'map' for message in trajectories)
+        assert all(message.points and message.header.frame_id == states[0].header.frame_id for message in trajectories)
         assert any(status.get('objective') for status in planning_statuses)
         assert all(np.isfinite(command.longitudinal.acceleration) for _, command in commands)
         assert any(command.longitudinal.is_defined_acceleration for _, command in commands)
@@ -153,7 +157,7 @@ def test_live_control_loop_and_stale_input(slow_optimizer):
               'tracker p95 ms', np.percentile([status['solve_ms'] for status in valid], 95),
               'GP clouds', len(clouds))
     finally:
-        for process in (safety, tracking, planning, simulation):
+        for process in (safety, tracking, planning, simulation, generation):
             outputs.append(stop_process(process))
         node.destroy_node()
         rclpy.shutdown()

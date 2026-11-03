@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 from timeit import default_timer
+import collections
 import json
 
 import casadi as ca
@@ -62,6 +63,8 @@ class pcm_node(Node):
         self.lanes = {"ego_lane_x": [], "ego_lane_y": [], "ego_lane_z": [], "left_lane_x": [], "left_lane_y": []}
         self.road_bounds = []
         self.scenario_stamp_ns = None
+        self.scenario_pose = None
+        self.ego_history = collections.deque(maxlen=400)
         self.oncomingObjects = [] # empty list
         self.followedObjects = [] # empty list
         self.vehicles = []
@@ -368,8 +371,10 @@ class pcm_node(Node):
                 target=scenario_worker, args=(self.scenario_requests, self.scenario_results, self.scenario_settings),
                 daemon=True)
             self.scenario_process.start()
+            self.worker_busy = False
+            self.pending_scenario = None
             self.traj_sub = self.create_subscription(
-                Scenario, '/scenario', self.scenario_requests.put, 1, raw=True)
+                Scenario, '/scenario', self.queue_scenario, 1, raw=True)
         else:
             self.traj_sub = self.create_subscription(
                 Scenario, '/scenario', self.scenario_callback, 1
@@ -392,6 +397,21 @@ class pcm_node(Node):
             steeringAngle=input_msg.tire_angle_front, vy=input_msg.twist.twist.linear.y,
             x=pose.position.x, y=pose.position.y, z=pose.position.z,
             yaw=self.quaternion_to_yaw(rotation), pitch=pitch)
+        stamp_ns = input_msg.header.stamp.sec * 1_000_000_000 + input_msg.header.stamp.nanosec
+        self.ego_history.append((stamp_ns, self.ego_state.x, self.ego_state.y, self.ego_state.yaw))
+
+    def ego_pose_at(self, stamp_ns):
+        if not self.ego_history:
+            return None
+        return min(self.ego_history, key=lambda sample: abs(sample[0] - stamp_ns))[1:]
+
+    def queue_scenario(self, data):
+        # A pipe-backed queue cannot drop stale messages, so keep at most one request in flight.
+        if self.worker_busy:
+            self.pending_scenario = data
+        else:
+            self.scenario_requests.put(data)
+            self.worker_busy = True
 
     def scenario_callback(self, input_msg):
         self.apply_scenario(parse_scenario(input_msg, self.scenario_settings))
@@ -403,6 +423,10 @@ class pcm_node(Node):
                 update = self.scenario_results.get_nowait()
             except queue.Empty:
                 break
+            self.worker_busy = False
+        if self.scenario_process is not None and not self.worker_busy and self.pending_scenario is not None:
+            self.queue_scenario(self.pending_scenario)
+            self.pending_scenario = None
         if update is not None:
             self.apply_scenario(update)
 
@@ -413,6 +437,7 @@ class pcm_node(Node):
         for warning in update['warnings']:
             self.get_logger().warn(warning)
         self.scenario_stamp_ns = update['stamp_ns']
+        self.scenario_pose = self.ego_pose_at(self.scenario_stamp_ns)
         self.pedestrians = update['pedestrians']
         self.vehicles = update['vehicles']
         self.lanes = update['lanes']
@@ -764,6 +789,24 @@ class pcm_node(Node):
         lateral_final = prediction[8][:, 5].full().flatten()
         yawrate_final = prediction[8][:, 6].full().flatten()
         z_final = prediction[0][:, 2].full().flatten()
+        # The plan lives in base_link at the scenario stamp; move it into the current base_link.
+        shift_yaw = 0.0
+        if self.scenario_pose is not None and self.ego_history:
+            x0, y0, yaw0 = self.scenario_pose
+            _, x1, y1, yaw1 = self.ego_history[-1]
+            map_x = x0 + math.cos(yaw0) * x_final - math.sin(yaw0) * y_final
+            map_y = y0 + math.sin(yaw0) * x_final + math.cos(yaw0) * y_final
+            x_final = math.cos(yaw1) * (map_x - x1) + math.sin(yaw1) * (map_y - y1)
+            y_final = -math.sin(yaw1) * (map_x - x1) + math.cos(yaw1) * (map_y - y1)
+            shift_yaw = yaw0 - yaw1
+        if shift_yaw:
+            rotation = np.array([0.0, 0.0, math.sin(0.5 * shift_yaw), math.cos(0.5 * shift_yaw)])
+            q = orientation_final
+            orientation_final = np.column_stack((
+                rotation[3] * q[:, 0] - rotation[2] * q[:, 1],
+                rotation[3] * q[:, 1] + rotation[2] * q[:, 0],
+                rotation[3] * q[:, 2] + rotation[2] * q[:, 3],
+                rotation[3] * q[:, 3] - rotation[2] * q[:, 2]))
 
 
         # publishing the trajectory
@@ -854,11 +897,16 @@ class pcm_node(Node):
             layers[name] = {'points': points.full().tolist(), 'alpha': alpha.full().flatten().tolist(),
                             'kernel': kernel, 'offset': 0.0}
         road = np.column_stack((self.lanes['ego_lane_x'], self.lanes['ego_lane_y'], self.lanes['ego_lane_z']))
+        coefficients = (self.c_numeric.full().flatten().tolist() if hasattr(self.c_numeric, 'full') else
+                        np.asarray(self.c_numeric, dtype=float).flatten().tolist())
         snapshot = {'version': 2, 'frame_id': 'base_link',
                     'stamp_ns': self.scenario_stamp_ns,
                     'planning': getattr(self, 'plan_diagnostics', {}),
                     'times': np.asarray(self.t).flatten().tolist(),
-                    'road': road.tolist(), 'road_bounds': self.road_bounds, 'layers': layers}
+                    'road': road.tolist(), 'road_bounds': self.road_bounds,
+                    'progress_reference': np.asarray(self.reference_data, dtype=float).flatten().tolist(),
+                    'optimized_coefficients': coefficients,
+                    'layers': layers}
         try:
             encoded = json.dumps(snapshot, allow_nan=False)
         except (ValueError, TypeError) as error:

@@ -88,7 +88,7 @@ def test_progress_reference_has_continuous_tangent_at_sample_boundaries():
 
 def test_progress_rollout_follows_real_roundabout_without_x_monotonicity():
     from scipy.io import loadmat
-    from plan_predictive_cost_map.pcm_longitudinal_dynamics import build_kinematic_rollout
+    from plan_predictive_cost_map.pcm_longitudinal_dynamics import build_dynamic_light_rollout, build_kinematic_rollout
 
     root = Path(__file__).resolve().parents[2]
     points = np.asarray(loadmat(root / 'scenario_files/roundabout_with_conflicting_traffic_costmap_data.mat',
@@ -112,6 +112,17 @@ def test_progress_rollout_follows_real_roundabout_without_x_monotonicity():
     assert np.max(distance) < 0.15
     assert planned[-1, 1] < -1.0
 
+    dynamic_light = build_dynamic_light_rollout(4.0, 20, 0.05, 0.25)
+    light_prediction = dynamic_light(ca.DM.zeros(4), ca.DM([0., 0., 0., 0., 5., 0., 0.]),
+                                     0., 0., ca.DM.zeros(4), ca.DM.zeros(4), 0., reference)
+    light_planned = light_prediction[0].full()[:, :2]
+    difference = light_planned[:, None, :] - local[None, :-1, :]
+    fraction = np.clip(np.sum(difference * direction[None, :, :], axis=2) / squared_length, 0.0, 1.0)
+    projected = local[None, :-1, :] + fraction[:, :, None] * direction[None, :, :]
+    light_distance = np.min(np.linalg.norm(light_planned[:, None, :] - projected, axis=2), axis=1)
+    assert np.max(light_distance) < 0.15
+    assert light_planned[-1, 1] < -1.0
+
 
 @pytest.mark.parametrize('selected_model', ['kinematic', 'dynamic_light', 'dynamic'])
 def test_launch_parameters(node, selected_model):
@@ -128,7 +139,7 @@ def test_launch_parameters(node, selected_model):
     assert parameters['lookahead_time'] == 4.0
     assert parameters['prediction_model'] == selected_model
     assert parameters['prediction_steps'] == 20
-    assert parameters['gp_state_period'] == 0.25
+    assert parameters['gp_state_period'] == 0.1
     assert parameters['weight_velocity'] == 0.5
     assert parameters['weight_lateral_acceleration'] == 0.5
     assert parameters['weight_crash'] == 1.0
@@ -823,6 +834,8 @@ def test_gp_snapshot_reuses_solver_state(node, monkeypatch):
         viewer.destroy_node()
     snapshot = json.loads(states[0].data)
     assert snapshot['stamp_ns'] == 123_000_456_789
+    np.testing.assert_allclose(snapshot['progress_reference'], node.reference_data)
+    np.testing.assert_allclose(snapshot['optimized_coefficients'], np.asarray(node.c_numeric).flatten())
     validate_snapshot(snapshot)
     trajectory = node.traj_eval(np.zeros(node.M), node.p_numeric)
     queries = np.column_stack((trajectory[0].full().flatten(), trajectory[1].full().flatten(),
@@ -1234,6 +1247,31 @@ def test_invalid_gp_snapshot_does_not_crash_or_publish(node):
     assert not snapshots
 
 
+def test_published_trajectory_follows_curved_scenario(node):
+    angle = np.linspace(0.0, math.pi / 2.0, 80)
+    scenario = Scenario()
+    path = PathWithTrafficRules()
+    path.traffic_rules.maximum_speed = 8.0
+    for x, y in zip(np.r_[np.linspace(-5.0, 0.0, 6)[:-1], 30.0 * np.sin(angle)],
+                    np.r_[np.zeros(5), -30.0 * (1.0 - np.cos(angle))]):
+        point = PathPointWithLaneId()
+        point.point.pose.position.x = float(x)
+        point.point.pose.position.y = float(y)
+        path.path.points.append(point)
+    scenario.paths = [path, path]
+    node.scenario_callback(scenario)
+    node.ego_state.vx = 8.0
+    trajectories = []
+    node.cmd_pub = SimpleNamespace(publish=lambda _: None)
+    node.trajectory_pub = SimpleNamespace(publish=trajectories.append)
+    node.last_exec = 0.0
+    node.callback()
+    assert trajectories
+    points = np.array([[point.pose.position.x, point.pose.position.y] for point in trajectories[-1].points])
+    reference_y = -30.0 * (1.0 - np.cos(np.arcsin(np.clip(points[:, 0] / 30.0, -1.0, 1.0))))
+    assert np.max(np.abs(points[:, 1] - reference_y)) < 0.5
+
+
 @pytest.mark.parametrize('successful_but_unsafe,nonfinite', [(False, False), (True, False), (False, True)])
 def test_invalid_solver_output_does_not_publish_a_replacement(node, successful_but_unsafe, nonfinite):
     scenario = Scenario()
@@ -1376,6 +1414,12 @@ def run_crossing_case(overrides=None, simulation_duration=14.0, production_launc
         if production_launch:
             simulator_arguments = ['ros2', 'launch', 'simulator', 'simulator.launch.py',
                                    'simulation_time_stamps:=true']
+        else:
+            processes.append(subprocess.Popen([
+                str(root / 'install/scenario_generation/lib/scenario_generation/scenario_generator'),
+                '--ros-args', '-p', f'scenario_file:={scenario_file}', '-p', 'generate_virtual_objects:=true',
+            ], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, env=child_environment,
+                start_new_session=True))
         processes.append(subprocess.Popen(simulator_arguments, stdout=subprocess.DEVNULL,
                                            stderr=subprocess.PIPE, text=True, env=child_environment,
                                            start_new_session=True))

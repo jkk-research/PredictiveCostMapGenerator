@@ -31,7 +31,7 @@ def stop_process(process):
 
 def generated_reference(route, ego):
     message = Trajectory()
-    message.header.frame_id = 'map'
+    message.header.frame_id = ego.header.frame_id
     message.header.stamp = ego.header.stamp
     if route.shape[1] == 2:
         route = np.column_stack([route, np.zeros(len(route))])

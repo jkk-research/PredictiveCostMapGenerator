@@ -81,9 +81,12 @@ def test_live_control_loop_and_stale_input(slow_optimizer):
     os.environ['ROS_LOCALHOST_ONLY'] = '1'
     root = Path(__file__).resolve().parents[3]
     simulator = root / 'install/simulator/lib/simulator/simulator'
+    scenario_generator = root / 'install/scenario_generation/lib/scenario_generation/scenario_generator'
     planner = root / 'install/plan_predictive_cost_map/lib/plan_predictive_cost_map/pcm_planner'
-    if not simulator.is_file() or not planner.is_file():
-        pytest.skip('Build simulator and plan_predictive_cost_map before the live test')
+    tracker = root / 'install/plan_predictive_cost_map/lib/plan_predictive_cost_map/mpc_tracker'
+    supervisor = root / 'install/plan_predictive_cost_map/lib/plan_predictive_cost_map/safety_supervisor'
+    if not all(path.is_file() for path in (simulator, scenario_generator, planner, tracker, supervisor)):
+        pytest.skip('Build scenario_generation, simulator and plan_predictive_cost_map before the live test')
     scenario_file = Path(os.environ.get('PCM_SCENARIO_FILE', str(root / 'src/scenario_files/occluded_pedestrian_crossing_costmap_data.mat')))
     full = os.environ.get('PCM_FULL_BENCHMARK') == '1'
     rclpy.init()
@@ -97,6 +100,10 @@ def test_live_control_loop_and_stale_input(slow_optimizer):
         node.create_subscription(Control, '/control/command/control_cmd', lambda value: commands.append((time.monotonic(), value)), 100),
         node.create_subscription(Ego, '/ego', states.append, 10),
     ]
+    generation = subprocess.Popen([str(scenario_generator), '--ros-args',
+        '-p', 'scenario_file:=' + str(scenario_file),
+        '-p', 'generate_virtual_objects:=' + os.environ.get('PCM_VIRTUAL_OBJECTS', 'false')],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True)
     simulation = subprocess.Popen([str(simulator), '--ros-args', '-p', 'scenario_file:=' + str(scenario_file),
         '-p', 'vehicle_model:=dynamic', '-p', 'command_mode:=acceleration',
         '-p', 'use_internal_controller:=false', '-p', 'use_scenario_speed_when_uncommanded:=false',
@@ -112,14 +119,16 @@ def test_live_control_loop_and_stale_input(slow_optimizer):
                       '-p', 'road_support_points:=8', '-p', 'jit:=false']
     planning = subprocess.Popen(arguments, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 text=True, start_new_session=True)
-    tracking = subprocess.Popen([str(root / 'install/plan_predictive_cost_map/lib/plan_predictive_cost_map/mpc_tracker')],
+    tracking = subprocess.Popen([str(tracker)],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True)
+    safety = subprocess.Popen([str(supervisor)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, start_new_session=True)
     outputs = []
     try:
         deadline = time.monotonic() + (240 if full else 40)
         tracking_started = None
         while time.monotonic() < deadline:
-            if planning.poll() is not None or tracking.poll() is not None or simulation.poll() is not None:
+            if any(process.poll() is not None for process in (planning, tracking, safety, simulation, generation)):
                 raise AssertionError('Planner or simulator exited unexpectedly')
             rclpy.spin_once(node, timeout_sec=.02)
             if statuses and statuses[-1].get('command_valid') and any(message.points for message in trajectories):
@@ -129,7 +138,8 @@ def test_live_control_loop_and_stale_input(slow_optimizer):
         assert tracking_started, 'No validated plan; recent statuses: ' + repr(statuses[-5:])
         assert any(command.longitudinal.is_defined_acceleration for _, command in commands)
         assert all(np.isfinite(command.longitudinal.acceleration) for _, command in commands)
-        assert any(message.points and message.header.frame_id == 'map' for message in trajectories)
+        assert any(message.points and message.header.frame_id == states[0].header.frame_id for message in trajectories)
+        assert all(message.header.frame_id == states[0].header.frame_id for message in costmaps)
         recent_times = [stamp for stamp, _ in commands if stamp >= tracking_started]
         intervals = np.diff(recent_times)
         assert len(intervals) >= 15
@@ -140,7 +150,7 @@ def test_live_control_loop_and_stale_input(slow_optimizer):
         assert all(message.points for message in trajectories), 'Planner must not clear references on failed replans'
         assert any('objective' in status for status in planner_statuses)
         publishers = {entry.node_name for entry in node.get_publishers_info_by_topic('/control/command/control_cmd')}
-        assert publishers == {'mpc_tracker'}
+        assert publishers == {'safety_supervisor'}
         if slow_optimizer:
             assert any(status.get('total_ms', 0) > 50 for status in planner_statuses), 'Slow solver did not exercise the multirate path'
             assert max(state.twist.twist.linear.x for state in states) > .2, repr((max(state.twist.twist.linear.x for state in states), len(successful), len(statuses), Counter(status.get('reason', status.get('state')) for status in statuses), max(command.longitudinal.acceleration for _, command in commands)))
@@ -155,9 +165,11 @@ def test_live_control_loop_and_stale_input(slow_optimizer):
         print('Validated cycles:', len(successful), 'command mean ms:', np.mean(intervals) * 1000,
               'tracking median/p95 ms:', np.percentile([status['solve_ms'] for status in successful], [50, 95]))
     finally:
-          outputs.append(stop_process(tracking))
+        outputs.append(stop_process(safety))
+        outputs.append(stop_process(tracking))
         outputs.append(stop_process(planning))
         outputs.append(stop_process(simulation))
+        outputs.append(stop_process(generation))
         node.destroy_node()
         rclpy.shutdown()
         for output in outputs:

@@ -35,7 +35,7 @@ def costmap_clouds(costmap, snapshot, config, times=(0., 1., 2., 3.), resolution
     projected_xy = route[None, :-1, :2] + fraction[:, :, None] * delta[None, :, :2]
     nearest = np.argmin(np.sum((points[:, None, :] - projected_xy)**2, axis=2), axis=1)
     height = route[nearest, 2] + fraction[np.arange(len(points)), nearest] * delta[nearest, 2] + .15
-    header = Header(frame_id='map')
+    header = Header(frame_id=snapshot.frame_id)
     header.stamp.sec = snapshot.stamp_ns // 1_000_000_000
     header.stamp.nanosec = snapshot.stamp_ns % 1_000_000_000
     clouds = []

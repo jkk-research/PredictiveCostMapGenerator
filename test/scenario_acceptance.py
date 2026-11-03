@@ -361,6 +361,10 @@ def run_case(path, root, initial_speed=50 / 3.6, fail_fast=True, maximum_seconds
                      node.create_subscription(String, '/control/mpc_tracker/status', lambda value: statuses.append(json.loads(value.data)), 1000),
                      node.create_subscription(String, '/plan/pcm_planner/status', lambda value: planner_statuses.append(json.loads(value.data)), 1000),
                      node.create_subscription(String, '/control/safety_supervisor/status', lambda value: safety_statuses.append(json.loads(value.data)), 1000)]
+    scenario_generator = subprocess.Popen([
+        str(root / 'install/scenario_generation/lib/scenario_generation/scenario_generator'),
+        '--ros-args', '-p', 'scenario_file:=' + str(path),
+    ], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True)
     simulator = subprocess.Popen([str(root / 'install/simulator/lib/simulator/simulator'), '--ros-args',
         '-p', 'scenario_file:=' + str(path), '-p', 'command_mode:=acceleration', '-p', 'vehicle_model:=dynamic',
         '-p', 'use_internal_controller:=false', '-p', 'simulation_time_stamps:=true',
@@ -380,7 +384,7 @@ def run_case(path, root, initial_speed=50 / 3.6, fail_fast=True, maximum_seconds
     try:
         wall_limit = time.monotonic() + time_limit + 15
         while time.monotonic() < wall_limit:
-            if any(process.poll() is not None for process in (simulator, planner, tracker, safety)):
+            if any(process.poll() is not None for process in (scenario_generator, simulator, planner, tracker, safety)):
                 termination = 'process_exit'
                 break
             rclpy.spin_once(node, timeout_sec=.02)
@@ -410,6 +414,7 @@ def run_case(path, root, initial_speed=50 / 3.6, fail_fast=True, maximum_seconds
         outputs.append(stop_process(tracker))
         outputs.append(stop_process(planner))
         outputs.append(stop_process(simulator))
+        outputs.append(stop_process(scenario_generator))
         node.destroy_node()
         rclpy.shutdown()
         if any('Traceback' in output for output in outputs):

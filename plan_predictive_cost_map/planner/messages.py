@@ -69,8 +69,8 @@ def measured_state(ego):
 
 def tracking_reference(message):
     from .tracking import TrackingReference
-    if message.header.frame_id != 'map' or len(message.points) < 2:
-        raise ValueError('Tracker requires a nonempty map-frame trajectory')
+    if message.header.frame_id not in ('map', 'map_local') or len(message.points) < 2:
+        raise ValueError('Tracker requires a nonempty map or map_local trajectory')
     states, pitches, times, accelerations, steering = [], [], [], [], []
     for point in message.points:
         angles = quaternion(point.pose).as_euler('xyz')
@@ -96,11 +96,14 @@ class Snapshot:
     road: Road
     lanes: tuple
     branches: tuple
+    frame_id: str = 'map'
 
 
 def snapshot_from_messages(scenario, ego, previous_command, version, config, safety_only=False):
-    if ego.header.frame_id != 'map' or scenario.header.frame_id not in ('map', 'base_link'):
-        raise ValueError('Planner requires map-frame ego and map/base_link scenario')
+    ego_frame = ego.header.frame_id
+    scenario_frame = scenario.header.frame_id
+    if ego_frame not in ('map', 'map_local') or scenario_frame not in (ego_frame, 'base_link'):
+        raise ValueError('Planner requires map or map_local ego and a matching or base_link scenario')
     if abs(stamp_ns(scenario.header.stamp) - stamp_ns(ego.header.stamp)) > 20_000_000:
         raise ValueError('Scenario and ego timestamps differ by more than 20 ms')
     rotation = quaternion(ego.pose.pose)
@@ -201,13 +204,13 @@ def snapshot_from_messages(scenario, ego, previous_command, version, config, saf
         raise ValueError('Invalid ego state')
     return Snapshot(version, stamp_ns(ego.header.stamp), monotonic(), state,
                     np.array([ego.accel.accel.linear.x,
-                              ego.tire_angle_front]), road, tuple(lanes), tuple(branches))
+                              ego.tire_angle_front]), road, tuple(lanes), tuple(branches), ego_frame)
 
 
 def trajectory_message(plan, snapshot, config):
     from autoware_planning_msgs.msg import Trajectory, TrajectoryPoint
     message = Trajectory()
-    message.header.frame_id = 'map'
+    message.header.frame_id = snapshot.frame_id
     message.header.stamp.sec = snapshot.stamp_ns // 1_000_000_000
     message.header.stamp.nanosec = snapshot.stamp_ns % 1_000_000_000
     for index, state in enumerate(plan.states):

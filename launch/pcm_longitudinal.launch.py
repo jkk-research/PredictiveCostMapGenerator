@@ -12,8 +12,8 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument('prediction_model', default_value='dynamic_light', choices=['kinematic', 'dynamic_light', 'dynamic'],
                       description='Planner prediction model; requires planner restart'),
-        DeclareLaunchArgument('lookahead_time', default_value='4.0', description='Prediction horizon in seconds'),
-        DeclareLaunchArgument('prediction_steps', default_value='20', description='Number of prediction samples'),
+        DeclareLaunchArgument('lookahead_time', default_value='3.0', description='Prediction horizon in seconds'),
+        DeclareLaunchArgument('prediction_steps', default_value='10', description='Number of prediction samples'),
         DeclareLaunchArgument('start_costmap_viewer', default_value='true',
                       description='Start the independent GP surface test node'),
         Node(
@@ -80,7 +80,7 @@ def generate_launch_description():
                 'vehicle.use_road_gradient': True,
                 'vehicle.road_pitch': 0.0,
                 'publish_gp_state': ParameterValue(LaunchConfiguration('start_costmap_viewer'), value_type=bool),
-                'gp_state_period': 0.25,
+                'gp_state_period': 0.1,
                 'scenario_worker': True,
             }],
         ),
@@ -95,7 +95,7 @@ def generate_launch_description():
                 'forward': 60.0,
                 'backward': 5.0,
                 'width': 20.0,
-                'update_rate': 4.0,
+                'update_rate': 10.0,
                 'prediction_time': 0.5,
                 'snap_to_prediction_time': True,
                 'height_scale': 1.0,

@@ -28,6 +28,7 @@
   <exec_depend>pacmod3_msgs</exec_depend>
   <exec_depend>ros2launch</exec_depend>
   <exec_depend>crp_msgs</exec_depend>
+  <exec_depend>scenario_generation</exec_depend>
 
   <!-- test dependencies -->
   <test_depend>ament_copyright</test_depend>
