@@ -32,6 +32,110 @@ def reference_data(points=None):
     return prepare_progress_reference(np.array([[0., 0., 0.], [100., 0., 0.]]) if points is None else points, 96)
 
 
+@pytest.fixture(scope='module')
+def powertrain_oracle(tmp_path_factory):
+    root = Path(__file__).resolve().parents[2]
+    simulator = root / 'CooperativeResearchPlatform_Simulator/simulator'
+    binary = tmp_path_factory.mktemp('powertrain_oracle') / 'oracle'
+    subprocess.run(['g++', '-std=c++17', '-O2', '-DPCM_POWERTRAIN_ORACLE',
+                    '-I' + str(simulator / 'include'),
+                    '-I' + str(root / 'CooperativeResearchPlatform_Simulator/scenario_generation/include'),
+                    str(Path(__file__).with_name('model_oracle.cpp')),
+                    str(simulator / 'src/vehicle_model.cpp'), str(simulator / 'src/powertrain_model.cpp'),
+                    '-o', str(binary)], check=True)
+    return binary, simulator / 'config/motor_efficiency.csv'
+
+
+@pytest.mark.parametrize('speed,acceleration_request,torque', [(8.0, 2.0, 0.0), (15.0, -3.0, -30.0), (0.0, 4.0, 0.0)])
+def test_powertrain_filter_force_and_energy_match_cpp(powertrain_oracle, speed, acceleration_request, torque):
+    from plan_predictive_cost_map.pcm_powertrain import build_powertrain_step, motor_efficiency_function
+
+    binary, efficiency_map = powertrain_oracle
+    initial = np.array([9.0 * speed / 0.32, 0.0, torque, 0.0, 0.0, 0.0])
+    step = build_powertrain_step(0.05, motor_efficiency_function(efficiency_map))
+    state, force, _, _ = step(initial, speed, acceleration_request)
+    expected = np.fromstring(subprocess.check_output([str(binary), '--powertrain', str(efficiency_map),
+        str(speed), str(acceleration_request), '0.05', str(initial[0]), '0.0', str(torque), '0.0'], text=True), sep=' ')
+    np.testing.assert_allclose(np.r_[state.full().flatten(), float(force)], expected, rtol=1e-11, atol=1e-9)
+    assert float(state[4]) >= 0.0 and float(state[5]) >= 0.0
+
+
+@pytest.mark.parametrize('vehicle_model', ['dynamic', 'kinematic'])
+@pytest.mark.parametrize('speed,target_speed,grade', [(8.0, 10.0, 0.1), (15.0, 12.0, -0.1), (0.0, 4.0, 0.0)])
+def test_actuated_vehicle_feedback_motion_and_energy_match_cpp(
+        powertrain_oracle, vehicle_model, speed, target_speed, grade):
+    from plan_predictive_cost_map.pcm_powertrain import build_actuator_interval, motor_efficiency_function
+
+    binary, efficiency_map = powertrain_oracle
+    initial = np.zeros(15)
+    initial[4] = speed
+    initial[7] = 9.0 * speed / 0.32
+    interval = build_actuator_interval(0.05, 1.0, 0.25, motor_efficiency_function(efficiency_map),
+                                       vehicle_model=vehicle_model)
+    state, _, _ = interval(initial, np.zeros(4), target_speed, [grade, grade], 0.05)
+    expected = np.fromstring(subprocess.check_output([str(binary), '--actuated', str(efficiency_map),
+        str(speed), str(target_speed), '0.05', str(grade), vehicle_model, '0.05'], text=True), sep=' ')
+    np.testing.assert_allclose(state.full().flatten()[:13], expected, rtol=1e-10, atol=1e-8)
+    assert float(state[11]) >= 0.0 and float(state[12]) >= 0.0
+
+
+def test_actuator_rollout_accumulates_net_energy_and_predicts_command_response(powertrain_oracle):
+    from plan_predictive_cost_map.pcm_powertrain import PowertrainConfig, motor_efficiency_function
+    from plan_predictive_cost_map.pcm_longitudinal_dynamics import build_dynamic_rollout
+
+    _, efficiency_map = powertrain_oracle
+    rollout = build_dynamic_rollout(0.5, 5, 0.05, 0.25, powertrain=PowertrainConfig(),
+                                    efficiency=motor_efficiency_function(efficiency_map))
+    coefficients = [2.0, 0.0, 0.0, 0.0]
+    outputs = rollout(coefficients, [0.0, 0.0, 0.0, 0.0, 8.0, 0.0, 0.0], 0.0, 0.0,
+                      np.zeros(4), np.zeros(4), 0.0, reference_data(), [225.0, 0.0, 0.0, 0.0])
+    assert len(outputs) == 15
+    assert float(outputs[4]) == 9.0
+    assert float(outputs[1][0]) < float(outputs[4])
+    assert float(outputs[10]) > 0.0
+    np.testing.assert_allclose(float(outputs[12]), float(outputs[10] - outputs[11]), atol=1e-10)
+    np.testing.assert_allclose(outputs[13][-1, 4:6].full().flatten(),
+                               [float(outputs[10]), float(outputs[11])])
+    assert np.isfinite(outputs[0].full()).all()
+
+
+def test_actuated_interval_holds_polynomial_speed_command(powertrain_oracle):
+    from plan_predictive_cost_map.pcm_powertrain import build_actuator_interval, motor_efficiency_function
+
+    binary, efficiency_map = powertrain_oracle
+    initial = np.zeros(15)
+    initial[4], initial[7] = 8.0, 225.0
+    interval = build_actuator_interval(0.05, 1.0, 0.25, motor_efficiency_function(efficiency_map))
+    state, _, _ = interval(initial, [2.0, 0.0, 0.0, 0.0], 8.0, [0.0, 0.0], 0.0)
+    expected = np.fromstring(subprocess.check_output([str(binary), '--actuated', str(efficiency_map),
+        '8.0', '8.5', '0.05', '0.0', 'dynamic', '0.0'], text=True), sep=' ')
+    np.testing.assert_allclose(state.full().flatten()[:13], expected, rtol=1e-10, atol=1e-8)
+
+
+@pytest.mark.parametrize('vehicle_model', ['dynamic', 'kinematic'])
+@pytest.mark.parametrize('speed,target_speed,grade', [(0.0, 4.0, 0.0), (8.0, 10.0, 0.1),
+                                                    (15.0, 12.0, -0.1)])
+@pytest.mark.parametrize('stage_step', [0.005, 0.01])
+def test_discrete_actuator_interval_preserves_motion_and_energy(
+    powertrain_oracle, vehicle_model, speed, target_speed, grade, stage_step):
+    from plan_predictive_cost_map.pcm_powertrain import build_actuator_interval, motor_efficiency_function
+
+    _, efficiency_map = powertrain_oracle
+    efficiency = motor_efficiency_function(efficiency_map)
+    initial = np.zeros(15)
+    initial[4], initial[7] = speed, 9.0 * speed / 0.32
+    reference = build_actuator_interval(0.1, 1.0, 0.25, efficiency, vehicle_model=vehicle_model)
+    reduced = build_actuator_interval(0.1, 1.0, 0.25, efficiency, vehicle_model=vehicle_model,
+                                      method='discrete', stage_step=stage_step)
+    arguments = [initial, np.zeros(4), target_speed, [grade, grade], 0.05]
+    expected = reference(*arguments)[0].full().flatten()
+    actual = reduced(*arguments)[0].full().flatten()
+    np.testing.assert_allclose(actual[:3], expected[:3], atol=0.01, rtol=0.0)
+    np.testing.assert_allclose(actual[4], expected[4], atol=0.05, rtol=0.0)
+    np.testing.assert_allclose(actual[7], expected[7], atol=0.5, rtol=0.0)
+    np.testing.assert_allclose(actual[11:13], expected[11:13], atol=2.0, rtol=0.03)
+
+
 def prediction_parameters(node, speed=8.0, target_speed=8.0):
     parameters = np.zeros(node.p_sym.numel())
     parameters[0], parameters[-1] = speed, target_speed
@@ -40,6 +144,207 @@ def prediction_parameters(node, speed=8.0, target_speed=8.0):
                      node.drivable_points.reshape(-1, order='F'), node.drivable_alpha, node.reference_data]
     parameters[offset:offset + len(geometry)] = geometry
     return parameters
+
+
+@pytest.fixture
+def actuator_node():
+    rclpy.init(args=['--ros-args', '-p', 'prediction_model:=dynamic_actuators',
+                     '-p', 'lookahead_time:=0.5', '-p', 'prediction_steps:=5',
+                     '-p', 'scenario_worker:=false', '-p', 'weight_energy:=0.2'])
+    planner = pcm_node()
+    planner.reference_data = reference_data()
+    try:
+        yield planner
+    finally:
+        planner.destroy_node()
+        rclpy.shutdown()
+
+
+@pytest.mark.parametrize('command_change', [2.0, -2.0])
+def test_dynamic_actuators_net_energy_is_a_signed_objective_term(actuator_node, command_change):
+    planner = actuator_node
+    parameters = prediction_parameters(planner)
+    parameters[-5:-1] = [225.0, 0.0, 0.0, 0.0]
+    coefficients = np.array([command_change, 0.0, 0.0, 0.0])
+    prediction = planner.rollout_eval(coefficients, parameters)
+    drawn, recovered, net = [float(value) for value in planner.energy_eval(coefficients, parameters)]
+    np.testing.assert_allclose(net, drawn - recovered, atol=1e-8)
+    assert net * command_change > 0.0
+    safety, field = planner.cost_sup(planner.c_sym, planner.p_sym)
+    evaluate = ca.Function('actuator_safety_objective', [planner.c_sym, planner.p_sym], [safety, field])
+    safety_value, values = evaluate(coefficients, parameters)
+    speeds = prediction[1].full().flatten()
+    acceleration = prediction[2].full()
+    costs = values.full().flatten()
+    baseline = (planner.get_parameter('weight_safety').value * float(safety_value) +
+        planner.get_parameter('weight_velocity').value * np.mean((8.0 - speeds)**2) / 64.0 +
+        planner.get_parameter('weight_lateral_acceleration').value * np.mean(acceleration[:, 1]**2) / planner.ay_max**2 +
+        planner.get_parameter('weight_acceleration').value * np.mean(acceleration[:, 0]**2) / planner.ax_max +
+        planner.get_parameter('weight_crash').value * np.sum(np.exp(5.0 * np.logaddexp(0.0, 10.0 * costs) / 10.0) - 1.0))
+    objective = float(planner.solver.get_function('nlp_f')(coefficients, parameters))
+    np.testing.assert_allclose(objective - baseline, planner.weight_energy * net / planner.energy_reference_j,
+                               rtol=1e-8, atol=1e-9)
+    gradient = planner.solver.get_function('nlp_grad_f')(coefficients, parameters)
+    assert all(np.isfinite(value.full()).all() for value in gradient)
+
+
+def test_dynamic_actuators_waits_for_fresh_measured_state(actuator_node):
+    from crp_msgs.msg import ActuatorState
+
+    planner = actuator_node
+    commands = []
+    planner.cmd_pub = SimpleNamespace(publish=commands.append)
+    planner.lane_received = True
+    planner.last_exec = 0.0
+    planner.callback()
+    assert not commands
+    message = ActuatorState(motor_speed_rad_s=225.0, motor_torque_nm=12.0,
+                                  shaft_twist_rad=0.01, filtered_acceleration_mps2=0.2)
+    planner.powertrain_callback(message)
+    np.testing.assert_allclose(planner.powertrain_state, [225.0, 0.01, 12.0, 0.2])
+    assert default_timer() - planner.powertrain_last_update < planner.powertrain_timeout
+    planner.powertrain_last_update = -math.inf
+    planner.last_exec = 0.0
+    planner.callback()
+    assert not commands
+
+
+def test_actuator_gp_queries_align_scene_position_and_time(actuator_node):
+    planner = actuator_node
+    positions = ca.MX.sym('query_positions', planner.N, 3)
+    _, field = planner.cost_sup(planner.c_sym, planner.p_sym, prediction=[positions])
+    evaluate = ca.Function('scene_aligned_field', [positions, planner.p_sym], [field])
+    parameters = prediction_parameters(planner)
+    count = planner.pedestrian_support_count
+    parameters[13:13 + count] = 0.5
+    supports = np.tile([10.0, 0.0, 0.7], (count, 1))
+    parameters[13 + count:13 + 4 * count] = supports.reshape(-1, order='F')
+    query = np.zeros((planner.N, 3))
+    parameters[-9:-5] = [8.0, 0.0, 0.0, 0.2]
+    shifted = evaluate(query, parameters).full()
+    parameters[-9:-5] = 0.0
+    supports[:, 2] -= 0.2
+    parameters[13 + count:13 + 4 * count] = supports.reshape(-1, order='F')
+    query[:, 0] = 8.0
+    np.testing.assert_allclose(shifted, evaluate(query, parameters).full(), atol=1e-10)
+
+
+def test_actuator_stop_polynomial_can_remain_below_zero(actuator_node):
+    planner = actuator_node
+    parameters = prediction_parameters(planner)
+    parameters[-5:-1] = [225.0, 0.0, 0.0, 0.0]
+    prediction = planner.rollout_eval([-100.0, 0.0, 0.0, 0.0], parameters)
+    assert float(prediction[4]) < 0.0
+    assert np.min(prediction[1].full()) >= 0.0
+    assert planner.g.numel() == 8 * planner.N + prediction[14].numel()
+
+
+def test_actuator_compression_cannot_make_empty_space_infeasible(actuator_node):
+    planner = actuator_node
+    planner.sparse_gp = True
+    planner.object_support_points = 2
+    times = np.linspace(0.0, planner.tau_h, planner.N + 1)
+    actor = ObjectState(60.0, -50.0, 0.0, 0.0, 0.0, 1,
+        predicted_path=np.column_stack((60.0 + 100.0 * times, -50.0 + 100.0 * times)),
+        prediction_time_step=planner.dt)
+    points, alpha, metadata = planner.fit_dynamic_gp([actor], planner.max_vehicles, planner.p_veh,
+        planner.vehicle_cost_primitive, planner.vehicle_noise_base, planner.vehicle_noise_growth)
+    assert metadata['compression'] == 'original_full_mean'
+    assert metadata['rejected_compression_error_bound'] > 1.0
+    assert metadata['error_bound'] == 0.0
+    planner.sparse_gp = False
+    full_points, full_alpha, _ = planner.fit_dynamic_gp([actor], planner.max_vehicles, planner.p_veh,
+        planner.vehicle_cost_primitive, planner.vehicle_noise_base, planner.vehicle_noise_growth)
+    np.testing.assert_array_equal(points, full_points)
+    np.testing.assert_allclose(alpha, full_alpha, atol=1e-12)
+
+
+def test_light_models_compression_cannot_make_empty_space_infeasible(node):
+    if node.prediction_model == 'dynamic':
+        pytest.skip('Unchanged dynamic model is outside this regression')
+    node.sparse_gp = True
+    node.object_support_points = 2
+    times = np.linspace(0.0, node.tau_h, node.N + 1)
+    actor = ObjectState(60.0, -50.0, 0.0, 0.0, 0.0, 1,
+        predicted_path=np.column_stack((60.0 + 100.0 * times, -50.0 + 100.0 * times)),
+        prediction_time_step=node.dt)
+    points, alpha, metadata = node.fit_dynamic_gp([actor], node.max_vehicles, node.p_veh,
+        node.vehicle_cost_primitive, node.vehicle_noise_base, node.vehicle_noise_growth)
+    assert metadata['compression'] == 'original_full_mean'
+    assert metadata['error_bound'] == 0.0
+    assert metadata['rejected_compression_error_bound'] > 1.0
+    node.sparse_gp = False
+    full_points, full_alpha, _ = node.fit_dynamic_gp([actor], node.max_vehicles, node.p_veh,
+        node.vehicle_cost_primitive, node.vehicle_noise_base, node.vehicle_noise_growth)
+    np.testing.assert_array_equal(points, full_points)
+    np.testing.assert_allclose(alpha, full_alpha, atol=1e-12)
+
+
+def test_light_model_reporting_matches_original_outputs(node):
+    if node.prediction_model == 'dynamic':
+        pytest.skip('Unchanged dynamic model is outside this regression')
+    parameters = prediction_parameters(node)
+    coefficients = np.zeros(node.M)
+    coefficients[0] = -0.5
+    actual = node.reporting_eval(coefficients, parameters)
+    expected = [*node.rollout_eval(coefficients, parameters), *node.fsup_eval(coefficients, parameters)]
+    for reported, reference in zip(actual, expected):
+        np.testing.assert_allclose(reported.full(), reference.full(), rtol=1e-9, atol=1e-9)
+
+
+def test_kinematic_warm_start_retains_physical_time_units(node):
+    if node.prediction_model != 'kinematic':
+        pytest.skip('Kinematic physical-time representation only')
+    previous = np.array([-1.0, 0.2, -0.01])
+    delta = 0.13
+    scale = node.tau_h ** np.arange(1, 4)
+    shifted = shift_velocity_coefficients(previous * scale, delta, node.tau_h) / scale
+    times = np.linspace(0.0, node.tau_h, 21)
+    original = sum(previous[index] * (times + delta)**(index + 1) for index in range(3))
+    offset = sum(previous[index] * delta**(index + 1) for index in range(3))
+    actual = sum(shifted[index] * times**(index + 1) for index in range(3))
+    np.testing.assert_allclose(actual, original - offset, atol=1e-12)
+
+
+def test_actuator_compiled_reporting_matches_model(actuator_node):
+    planner = actuator_node
+    parameters = prediction_parameters(planner)
+    parameters[-5:-1] = [225.0, 0.0, 0.0, 0.0]
+    coefficients = np.array([-3.0, 0.5, 0.0, 0.0])
+    expected = [*planner.rollout_eval(coefficients, parameters), *planner.fsup_eval(coefficients, parameters)]
+    actual = planner.reporting_eval(coefficients, parameters)
+    assert len(actual) == len(expected)
+    for reported, reference in zip(actual, expected):
+        np.testing.assert_allclose(reported.full(), reference.full(), rtol=1e-10, atol=1e-9)
+
+
+@pytest.mark.parametrize('initial_speed', [0.0, 8.0])
+def test_dynamic_actuators_solves_with_energy_and_measured_state(actuator_node, initial_speed):
+    from crp_msgs.msg import ActuatorState
+
+    planner = actuator_node
+    scenario = Scenario()
+    path = PathWithTrafficRules()
+    path.traffic_rules.maximum_speed = 8.0
+    for distance in (0.0, 10.0, 20.0, 30.0):
+        point = PathPointWithLaneId()
+        point.point.pose.position.x = distance
+        path.path.points.append(point)
+    scenario.paths = [path]
+    planner.scenario_callback(scenario)
+    planner.ego_state.vx = initial_speed
+    planner.powertrain_callback(ActuatorState(motor_speed_rad_s=initial_speed * 9.0 / 0.32))
+    commands, trajectories = [], []
+    planner.cmd_pub = SimpleNamespace(publish=commands.append)
+    planner.trajectory_pub = SimpleNamespace(publish=trajectories.append)
+    planner.last_exec = 0.0
+    planner.callback()
+    assert planner.plan_diagnostics['accepted'], planner.plan_diagnostics
+    assert commands and trajectories
+    assert 0.0 < commands[0].longitudinal.velocity <= 8.01
+    assert trajectories[0].points[-1].longitudinal_velocity_mps > 0.0
+    energy = planner.plan_diagnostics['energy']
+    np.testing.assert_allclose(energy['net_j'], energy['drawn_j'] - energy['recovered_j'], atol=1e-8)
 
 
 @pytest.fixture(params=['dynamic', 'kinematic', 'dynamic_light'])
@@ -1247,6 +1552,149 @@ def test_invalid_gp_snapshot_does_not_crash_or_publish(node):
     assert not snapshots
 
 
+def test_callback_reports_separate_timing_stages(node):
+    scenario = Scenario()
+    path = PathWithTrafficRules()
+    path.traffic_rules.maximum_speed = 8.0
+    for distance in (0.0, 10.0, 20.0, 30.0):
+        point = PathPointWithLaneId()
+        point.point.pose.position.x = distance
+        path.path.points.append(point)
+    scenario.paths = [path]
+    node.scenario_callback(scenario)
+    node.ego_state.vx = 8.0
+    node.timing_enabled = True
+    records = []
+    node.timing_pub = SimpleNamespace(publish=records.append)
+    node.last_exec = 0.0
+    node.callback()
+    record = json.loads(records[-1].data)
+    stages = ('scenario_update_seconds', 'pedestrian_gp_seconds', 'vehicle_gp_seconds',
+              'parameter_pack_seconds', 'initialization_seconds', 'optimizer_seconds',
+              'validation_seconds', 'postprocess_seconds')
+    assert all(record[key] >= 0.0 for key in stages)
+    assert sum(record[key] for key in stages) <= record['total_seconds']
+    assert record['optimizer_seconds'] == node.plan_diagnostics['solve_seconds']
+    assert record['replanned'] and record['accepted']
+    assert record['window']['count'] == 1
+    assert record['deadline_missed'] == (record['total_seconds'] > node.timer_period)
+
+
+def test_sparse_mean_preserves_branches_and_bounds_original_field():
+    from plan_predictive_cost_map.pcm_kernels import numeric_rbf_kernel
+    from plan_predictive_cost_map.pcm_longitudinal import PredictionBranch
+
+    times = np.linspace(0.4, 4.0, 10)
+    helper = SimpleNamespace(N=10, t=ca.DM(times), dt=0.4, max_predicted_paths=2,
+                             sparse_gp=False, object_support_points=5)
+    helper.sample_object_path = lambda obj, branch: pcm_node.sample_object_path(helper, obj, branch)
+    sample_times = np.linspace(0.0, 4.0, 41)
+    objects = [ObjectState(18.0 + offset, -3.6, 0.0, 0.0, 0.0, 7, existence_probability=existence,
+               predicted_branches=[PredictionBranch(np.column_stack((
+                   np.full(41, 18.0 + offset), -3.6 + speed * sample_times)), 0.1, confidence)
+                   for speed, confidence in ((1.4, 0.8), (0.2, 0.2))])
+               for offset, existence in ((0.0, 1.0), (10.0, 0.2))]
+    kernel = [1.0, 3.5, 1.5, 2.0]
+    full_points, full_alpha, _ = pcm_node.fit_dynamic_gp(helper, objects, 2, kernel, 3.0, 0.02, 0.15)
+    helper.sparse_gp = True
+    points, alpha, metadata = pcm_node.fit_dynamic_gp(helper, objects, 2, kernel, 3.0, 0.02, 0.15)
+    assert len(points) == 20 and len(full_points) == 40
+    assert metadata['represented_branches'] == 4
+    assert metadata['active_support_count'] == 20
+    assert len(set(metadata['selected_source_indices'])) == 20
+    for branch_index in range(4):
+        selected = metadata['selected_source_indices'][branch_index * 5:(branch_index + 1) * 5]
+        assert all(branch_index * 10 <= index < (branch_index + 1) * 10 for index in selected)
+    queries = np.random.default_rng(7).uniform([0.0, -8.0, 0.0], [45.0, 8.0, 4.0], (1000, 3))
+    full_mean = numeric_rbf_kernel(queries, full_points, kernel) @ full_alpha
+    sparse_mean = numeric_rbf_kernel(queries, points, kernel) @ alpha
+    assert np.max(np.abs(full_mean - sparse_mean)) <= metadata['error_bound'] + 1e-10
+    assert np.min(sparse_mean + metadata['error_bound'] - full_mean) >= -1e-10
+    helper.object_support_points = helper.N
+    exact_points, exact_alpha, exact_metadata = pcm_node.fit_dynamic_gp(
+        helper, objects, 2, kernel, 3.0, 0.02, 0.15)
+    np.testing.assert_array_equal(exact_points, full_points)
+    np.testing.assert_array_equal(exact_alpha, full_alpha)
+    assert exact_metadata['error_bound'] == 0.0
+    helper.object_support_points = 5
+    empty_points, empty_alpha, empty_metadata = pcm_node.fit_dynamic_gp(
+        helper, [], 2, kernel, 3.0, 0.02, 0.15)
+    assert len(empty_points) == 20
+    np.testing.assert_array_equal(empty_alpha, 0.0)
+    assert empty_metadata['error_bound'] == 0.0
+
+
+@pytest.mark.parametrize('sparse', ['false', 'true'])
+def test_sparse_launch_switch_is_typed_and_independent(sparse):
+    launch_file = Path(__file__).resolve().parents[1] / 'launch/pcm_longitudinal.launch.py'
+    description = runpy.run_path(str(launch_file))['generate_launch_description']()
+    context = LaunchContext()
+    context.launch_configurations.update(sparse_gp=sparse, object_support_points='5', timing_enabled='true')
+    for action in description.entities:
+        if isinstance(action, DeclareLaunchArgument):
+            action.execute(context)
+    action = next(action for action in description.entities if isinstance(action, Node))
+    normalized = next(value for key, value in vars(action).items() if key.endswith('__parameters'))
+    settings = evaluate_parameters(context, normalized)[0]
+    assert settings['sparse_gp'] is (sparse == 'true')
+    assert settings['object_support_points'] == 5
+    assert settings['timing_enabled'] is True
+    assert settings['prediction_steps'] == 10
+
+
+def test_sparse_gp_parameters_require_restart(node):
+    from rclpy.parameter import Parameter
+
+    results = node.set_parameters([Parameter('sparse_gp', value=True),
+                                   Parameter('object_support_points', value=2)])
+    assert all(not result.successful for result in results)
+    assert node.sparse_gp is False
+
+
+@pytest.mark.parametrize('selected_model', ['kinematic', 'dynamic_light', 'dynamic'])
+def test_sparse_planner_keeps_ego_samples_and_snapshot_contract(selected_model):
+    rclpy.init(args=['--ros-args', '-p', 'prediction_model:=' + selected_model,
+                     '-p', 'lookahead_time:=1.0', '-p', 'prediction_steps:=4',
+                     '-p', 'sparse_gp:=true', '-p', 'object_support_points:=2',
+                     '-p', 'scenario_worker:=false'])
+    planner = pcm_node()
+    try:
+        assert planner.N == 4
+        capacity = 16 if selected_model in ('kinematic', 'dynamic_light') else 8
+        assert planner.object_support_points == 2
+        assert planner.pedestrian_support_count == capacity
+        assert planner.vehicle_support_count == capacity
+        scenario = Scenario()
+        path = PathWithTrafficRules()
+        path.traffic_rules.maximum_speed = 8.0
+        for distance in (0.0, 10.0, 20.0, 30.0):
+            point = PathPointWithLaneId()
+            point.point.pose.position.x = distance
+            path.path.points.append(point)
+        scenario.paths = [path]
+        planner.scenario_callback(scenario)
+        planner.ego_state.vx = 8.0
+        planner.pedestrians = [ObjectState(18.0, -3.6, 0.0, 0.0, 0.0, 7,
+            predicted_path=np.array([[18.0, -3.6], [18.0, -2.2], [18.0, -0.8]]), prediction_time_step=0.5)]
+        snapshots, trajectories = [], []
+        planner.publish_gp_state = True
+        planner.gp_state_pub = SimpleNamespace(publish=snapshots.append, get_subscription_count=lambda: 1)
+        planner.trajectory_pub = SimpleNamespace(publish=trajectories.append)
+        planner.last_exec = 0.0
+        planner.callback()
+        snapshot = json.loads(snapshots[-1].data)
+        validate_snapshot(snapshot)
+        assert trajectories and len(trajectories[-1].points) == 4
+        prediction = planner.rollout_eval(planner.c_numeric, planner.p_numeric)
+        query = np.column_stack((prediction[0].full()[:, :2], np.asarray(planner.t).flatten()))
+        np.testing.assert_allclose(evaluate_field(snapshot, query),
+            planner.fsup_eval(planner.c_numeric, planner.p_numeric)[0].full().flatten(), atol=1e-8)
+        assert snapshot['layers']['pedestrian']['offset'] >= -1.0
+    finally:
+        planner.destroy_node()
+        rclpy.shutdown()
+
+
 def test_published_trajectory_follows_curved_scenario(node):
     angle = np.linspace(0.0, math.pi / 2.0, 80)
     scenario = Scenario()
@@ -1290,6 +1738,9 @@ def test_invalid_solver_output_does_not_publish_a_replacement(node, successful_b
     snapshots = []
     node.publish_gp_state = True
     node.gp_state_pub = SimpleNamespace(publish=snapshots.append, get_subscription_count=lambda: 1)
+    timing_records = []
+    node.timing_enabled = True
+    node.timing_pub = SimpleNamespace(publish=timing_records.append)
 
     def rejected_solution(**arguments):
         coefficients = np.zeros(node.M)
@@ -1307,6 +1758,8 @@ def test_invalid_solver_output_does_not_publish_a_replacement(node, successful_b
     assert len(snapshots) == 1
     diagnostics = json.loads(snapshots[0].data)['planning']
     assert not diagnostics['accepted']
+    assert len(timing_records) == 1
+    assert json.loads(timing_records[0].data)['accepted'] is False
     if nonfinite:
         assert diagnostics['maximum_constraint'] is None
 
@@ -1400,11 +1853,13 @@ def run_crossing_case(overrides=None, simulation_duration=14.0, production_launc
     try:
         processes.append(subprocess.Popen(arguments, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                            text=True, env=child_environment, start_new_session=True))
-        deadline = time.monotonic() + 10.0
+        deadline = time.monotonic() + 300.0
         while (not any(endpoint.node_name == 'pcm_longitudinal'
                    for endpoint in probe.get_subscriptions_info_by_topic('/scenario'))
                and time.monotonic() < deadline):
             rclpy.spin_once(probe, timeout_sec=0.05)
+        assert any(endpoint.node_name == 'pcm_longitudinal'
+                   for endpoint in probe.get_subscriptions_info_by_topic('/scenario')), 'Planner startup timed out'
         simulator_arguments = [
             str(root / 'install/simulator/lib/simulator/simulator'), '--ros-args', '--log-level', 'error',
             '-p', f'scenario_file:={scenario_file}', '-p', 'command_mode:=speed',
@@ -1475,7 +1930,9 @@ def run_crossing_case(overrides=None, simulation_duration=14.0, production_launc
             planning = snapshot.get('planning', {})
             status = planning.get('status', 'unknown')
             solver_outcomes[status] = solver_outcomes.get(status, 0) + 1
-            query = np.column_stack((snapshot['layers']['ego_lane']['points'], snapshot['times']))
+            points = np.asarray(snapshot['layers']['ego_lane']['points'])
+            query = np.column_stack((np.tile(points, (len(snapshot['times']), 1)),
+                                     np.repeat(snapshot['times'], len(points))))
             peak_cost = max(peak_cost, float(np.max(evaluate_field(snapshot, query))))
         command_times = np.array([command.stamp.sec + command.stamp.nanosec * 1e-9 for command in commands])
         return {'minimum_clearance': minimum_clearance,
@@ -1504,6 +1961,16 @@ def run_crossing_case(overrides=None, simulation_duration=14.0, production_launc
                 os.environ.pop(name, None)
             else:
                 os.environ[name] = value
+
+
+@pytest.mark.skipif(os.environ.get('PCM_LONGITUDINAL_CROSSING_TEST') != '1',
+                    reason='Opt-in closed-loop simulator regression')
+@pytest.mark.parametrize('repeat', [0, 1])
+def test_actuator_crossing_stops_before_pedestrian(repeat):
+    result = run_crossing_case(simulation_duration=22.0, production_launch=True)
+    print('Actuator stopping metrics:', json.dumps(result, sort_keys=True))
+    assert result['minimum_clearance'] > 0.5
+    assert result['minimum_approach_speed'] < 0.1
 
 
 @pytest.mark.skipif(os.environ.get('PCM_LONGITUDINAL_CROSSING_TEST') != '1',

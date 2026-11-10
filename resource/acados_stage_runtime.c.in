@@ -1,0 +1,49 @@
+#include "acados_solver_@MODEL@.h"
+#include <math.h>
+
+void * pcm_stage_create(void)
+{
+    @MODEL@_solver_capsule * capsule = @MODEL@_acados_create_capsule();
+    if (@MODEL@_acados_create(capsule)) {
+        @MODEL@_acados_free_capsule(capsule);
+        return 0;
+    }
+    return capsule;
+}
+
+void pcm_stage_free(void * handle)
+{
+    @MODEL@_solver_capsule * capsule = handle;
+    @MODEL@_acados_free(capsule);
+    @MODEL@_acados_free_capsule(capsule);
+}
+
+int pcm_stage_solve(void * handle, const double * parameters, const double * initial,
+                    double * commands, double * states, int * iterations)
+{
+    @MODEL@_solver_capsule * capsule = handle;
+    ocp_nlp_config * config = @MODEL@_acados_get_nlp_config(capsule);
+    ocp_nlp_dims * dims = @MODEL@_acados_get_nlp_dims(capsule);
+    ocp_nlp_in * input = @MODEL@_acados_get_nlp_in(capsule);
+    ocp_nlp_out * output = @MODEL@_acados_get_nlp_out(capsule);
+    double lower = 0.0;
+    double upper = fmax(parameters[0], parameters[@PARAMETERS@ - 1]);
+    ocp_nlp_constraints_model_set(config, dims, input, output, 0, "lbx", (void *) initial);
+    ocp_nlp_constraints_model_set(config, dims, input, output, 0, "ubx", (void *) initial);
+    for (int stage = 0; stage <= @STAGES@; ++stage) {
+        @MODEL@_acados_update_params(capsule, stage, (double *) parameters, @PARAMETERS@);
+        ocp_nlp_out_set(config, dims, output, input, stage, "x", states + 15 * stage);
+        if (stage < @STAGES@) {
+            ocp_nlp_constraints_model_set(config, dims, input, output, stage, "lbu", &lower);
+            ocp_nlp_constraints_model_set(config, dims, input, output, stage, "ubu", &upper);
+            ocp_nlp_out_set(config, dims, output, input, stage, "u", commands + stage);
+        }
+    }
+    int status = @MODEL@_acados_solve(capsule);
+    for (int stage = 0; stage <= @STAGES@; ++stage) {
+        ocp_nlp_out_get(config, dims, output, stage, "x", states + 15 * stage);
+        if (stage < @STAGES@) {ocp_nlp_out_get(config, dims, output, stage, "u", commands + stage);}
+    }
+    ocp_nlp_get(@MODEL@_acados_get_nlp_solver(capsule), "sqp_iter", iterations);
+    return status;
+}

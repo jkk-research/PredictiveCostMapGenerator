@@ -1,0 +1,840 @@
+{
+  "method": "Fixed measured states; full GP; current launch physical/objective settings; one cold and repeated warm solves. JIT compilation is reported separately. Detailed-model replay checks are outside timings; no closed-loop or live deadline guarantee.",
+  "results": [
+    {
+      "variant": "baseline",
+      "build_seconds": 0.35142476500004705,
+      "horizon": 0.5,
+      "prediction_steps": 5,
+      "stage_step": 0.005,
+      "cases": {
+        "rest": {
+          "cold": {
+            "scenario_update_seconds": 2.767999831121415e-06,
+            "initialization_seconds": 0.01990110300039305,
+            "optimizer_seconds": 0.7363025990002825,
+            "validation_seconds": 0.00023493500020776992,
+            "replanned": true,
+            "pedestrian_gp_seconds": 0.0001749369998833572,
+            "vehicle_gp_seconds": 8.784300007391721e-05,
+            "parameter_pack_seconds": 3.4854999739764025e-05,
+            "postprocess_seconds": 0.002695773000141344,
+            "total_seconds": 0.7595234989998971,
+            "deadline_seconds": 0.05,
+            "deadline_missed": true,
+            "prediction_model": "dynamic_actuators",
+            "gp_mode": "full",
+            "object_support_points": 5,
+            "dynamic_support_counts": [
+              20,
+              20
+            ],
+            "gp_error_bounds": [
+              0.0,
+              0.0
+            ],
+            "accepted": true,
+            "iterations": 8,
+            "oracle_seconds": {
+              "t_wall_nlp_f": 0.009401946999999999,
+              "t_wall_nlp_g": 0.010294867000000001,
+              "t_wall_nlp_grad": 0.0,
+              "t_wall_nlp_grad_f": 0.061365865000000006,
+              "t_wall_nlp_hess_l": 0.5129666279999999,
+              "t_wall_nlp_jac_g": 0.11916511400000002
+            },
+            "oracle_calls": {
+              "n_call_nlp_f": 11,
+              "n_call_nlp_g": 11,
+              "n_call_nlp_grad": 0,
+              "n_call_nlp_grad_f": 10,
+              "n_call_nlp_hess_l": 8,
+              "n_call_nlp_jac_g": 10
+            },
+            "window": {
+              "count": 1,
+              "mean_seconds": 0.7595234989998971,
+              "p50_seconds": 0.7595234989998971,
+              "p95_seconds": 0.7595234989998971,
+              "p99_seconds": 0.7595234989998971,
+              "max_seconds": 0.7595234989998971,
+              "deadline_misses": 1
+            }
+          },
+          "cold_detailed_check": {
+            "max_position_error_m": 0.0,
+            "max_speed_error_mps": 0.0,
+            "predicted_net_j": 3006.650410394374,
+            "detailed_net_j": 3006.650410394374,
+            "net_error_j": 0.0,
+            "drawn_error_j": 0.0,
+            "recovered_error_j": 0.0,
+            "detailed_maximum_constraint": -0.07980380146299673,
+            "detailed_feasible": true
+          },
+          "warm": {
+            "total_seconds": {
+              "mean": 0.42289416733350055,
+              "p50": 0.44613135400004467,
+              "p95": 0.5223986059001163,
+              "max": 0.5308727450001243
+            },
+            "optimizer_seconds": {
+              "mean": 0.4181593380000474,
+              "p50": 0.44190977400012343,
+              "p95": 0.5178881492999607,
+              "max": 0.5263301909999427
+            },
+            "initialization_seconds": {
+              "mean": 0.0012235953334614653,
+              "p50": 0.0009689080002317496,
+              "p95": 0.0016801474002022586,
+              "max": 0.001759174000198982
+            },
+            "postprocess_seconds": {
+              "mean": 0.0027641996665200472,
+              "p50": 0.0026315569998587307,
+              "p95": 0.0030025135997220785,
+              "max": 0.003043730999706895
+            }
+          },
+          "warm_accepted": 3,
+          "warm_deadline_misses": 3,
+          "warm_cycles": 3,
+          "warm_iterations": {
+            "mean": 4.666666666666667,
+            "p50": 5.0,
+            "p95": 5.9,
+            "max": 6.0
+          },
+          "warm_detailed_checks": [
+            {
+              "max_position_error_m": 0.0,
+              "max_speed_error_mps": 0.0,
+              "predicted_net_j": 2996.1715845820413,
+              "detailed_net_j": 2996.1715845820413,
+              "net_error_j": 0.0,
+              "drawn_error_j": 0.0,
+              "recovered_error_j": 0.0,
+              "detailed_maximum_constraint": -0.07980380146299673,
+              "detailed_feasible": true
+            },
+            {
+              "max_position_error_m": 0.0,
+              "max_speed_error_mps": 0.0,
+              "predicted_net_j": 3007.264537977559,
+              "detailed_net_j": 3007.264537977559,
+              "net_error_j": 0.0,
+              "drawn_error_j": 0.0,
+              "recovered_error_j": 0.0,
+              "detailed_maximum_constraint": -0.07980380146299673,
+              "detailed_feasible": true
+            },
+            {
+              "max_position_error_m": 0.0,
+              "max_speed_error_mps": 0.0,
+              "predicted_net_j": 3007.264537977559,
+              "detailed_net_j": 3007.264537977559,
+              "net_error_j": 0.0,
+              "drawn_error_j": 0.0,
+              "recovered_error_j": 0.0,
+              "detailed_maximum_constraint": -0.07980380146299673,
+              "detailed_feasible": true
+            }
+          ],
+          "last_status": "Solve_Succeeded"
+        },
+        "moving": {
+          "cold": {
+            "scenario_update_seconds": 1.7207000382768456e-05,
+            "initialization_seconds": 0.024179329000162397,
+            "optimizer_seconds": 2.455342420999841,
+            "validation_seconds": 0.00023995799983822508,
+            "replanned": true,
+            "pedestrian_gp_seconds": 0.0002731260001382907,
+            "vehicle_gp_seconds": 0.0001443190003556083,
+            "parameter_pack_seconds": 5.105099990032613e-05,
+            "postprocess_seconds": 0.0027806229995803733,
+            "total_seconds": 2.4830956900000274,
+            "deadline_seconds": 0.05,
+            "deadline_missed": true,
+            "prediction_model": "dynamic_actuators",
+            "gp_mode": "full",
+            "object_support_points": 5,
+            "dynamic_support_counts": [
+              20,
+              20
+            ],
+            "gp_error_bounds": [
+              0.0,
+              0.0
+            ],
+            "accepted": true,
+            "iterations": 28,
+            "oracle_seconds": {
+              "t_wall_nlp_f": 0.07363775399999999,
+              "t_wall_nlp_g": 0.07929697299999994,
+              "t_wall_nlp_grad": 0.0,
+              "t_wall_nlp_grad_f": 0.179888055,
+              "t_wall_nlp_hess_l": 1.7329188340000001,
+              "t_wall_nlp_jac_g": 0.33790831199999993
+            },
+            "oracle_calls": {
+              "n_call_nlp_f": 92,
+              "n_call_nlp_g": 92,
+              "n_call_nlp_grad": 0,
+              "n_call_nlp_grad_f": 30,
+              "n_call_nlp_hess_l": 28,
+              "n_call_nlp_jac_g": 30
+            },
+            "window": {
+              "count": 5,
+              "mean_seconds": 0.9022603382000852,
+              "p50_seconds": 0.5308727450001243,
+              "p95_seconds": 2.138381251800001,
+              "p99_seconds": 2.414152802360022,
+              "max_seconds": 2.4830956900000274,
+              "deadline_misses": 5
+            }
+          },
+          "cold_detailed_check": {
+            "max_position_error_m": 0.0,
+            "max_speed_error_mps": 0.0,
+            "predicted_net_j": -6382.592951516861,
+            "detailed_net_j": -6382.592951516861,
+            "net_error_j": 0.0,
+            "drawn_error_j": 0.0,
+            "recovered_error_j": 0.0,
+            "detailed_maximum_constraint": -0.144295582465352,
+            "detailed_feasible": true
+          },
+          "warm": {
+            "total_seconds": {
+              "mean": 2.554324879666941,
+              "p50": 2.6349462780003705,
+              "p95": 2.641077101400197,
+              "max": 2.6417583040001773
+            },
+            "optimizer_seconds": {
+              "mean": 2.5281498360000114,
+              "p50": 2.6082088200000726,
+              "p95": 2.61543531960001,
+              "max": 2.6162382640000033
+            },
+            "initialization_seconds": {
+              "mean": 0.02289030633346556,
+              "p50": 0.02288809699984995,
+              "p95": 0.023564262500349285,
+              "max": 0.02363939200040477
+            },
+            "postprocess_seconds": {
+              "mean": 0.002663183666754776,
+              "p50": 0.0025958399996852677,
+              "p95": 0.0027933963001942176,
+              "max": 0.0028153470002507675
+            }
+          },
+          "warm_accepted": 3,
+          "warm_deadline_misses": 3,
+          "warm_cycles": 3,
+          "warm_iterations": {
+            "mean": 28.0,
+            "p50": 28.0,
+            "p95": 28.0,
+            "max": 28.0
+          },
+          "warm_detailed_checks": [
+            {
+              "max_position_error_m": 0.0,
+              "max_speed_error_mps": 0.0,
+              "predicted_net_j": -6382.592951516861,
+              "detailed_net_j": -6382.592951516861,
+              "net_error_j": 0.0,
+              "drawn_error_j": 0.0,
+              "recovered_error_j": 0.0,
+              "detailed_maximum_constraint": -0.144295582465352,
+              "detailed_feasible": true
+            },
+            {
+              "max_position_error_m": 0.0,
+              "max_speed_error_mps": 0.0,
+              "predicted_net_j": -6382.592951516861,
+              "detailed_net_j": -6382.592951516861,
+              "net_error_j": 0.0,
+              "drawn_error_j": 0.0,
+              "recovered_error_j": 0.0,
+              "detailed_maximum_constraint": -0.144295582465352,
+              "detailed_feasible": true
+            },
+            {
+              "max_position_error_m": 0.0,
+              "max_speed_error_mps": 0.0,
+              "predicted_net_j": -6382.592951516861,
+              "detailed_net_j": -6382.592951516861,
+              "net_error_j": 0.0,
+              "drawn_error_j": 0.0,
+              "recovered_error_j": 0.0,
+              "detailed_maximum_constraint": -0.144295582465352,
+              "detailed_feasible": true
+            }
+          ],
+          "last_status": "Solve_Succeeded"
+        }
+      }
+    },
+    {
+      "variant": "solver_only",
+      "build_seconds": 23.81836071099997,
+      "horizon": 0.5,
+      "prediction_steps": 5,
+      "stage_step": 0.005,
+      "cases": {
+        "rest": {
+          "cold": {
+            "scenario_update_seconds": 5.6710000535531435e-06,
+            "initialization_seconds": 0.008211272999687935,
+            "optimizer_seconds": 0.03171501399992849,
+            "validation_seconds": 0.00019533299973772955,
+            "replanned": true,
+            "pedestrian_gp_seconds": 0.0003301090000604745,
+            "vehicle_gp_seconds": 0.00018771399982142611,
+            "parameter_pack_seconds": 6.000200028211111e-05,
+            "postprocess_seconds": 0.0032761070001470216,
+            "total_seconds": 0.04406916700008878,
+            "deadline_seconds": 0.05,
+            "deadline_missed": false,
+            "prediction_model": "dynamic_actuators",
+            "gp_mode": "full",
+            "object_support_points": 5,
+            "dynamic_support_counts": [
+              20,
+              20
+            ],
+            "gp_error_bounds": [
+              0.0,
+              0.0
+            ],
+            "accepted": true,
+            "iterations": 5,
+            "oracle_seconds": {
+              "t_wall_nlp_f": 0.001276607,
+              "t_wall_nlp_g": 0.001167569,
+              "t_wall_nlp_grad": 0.0,
+              "t_wall_nlp_grad_f": 0.0067231209999999994,
+              "t_wall_nlp_jac_g": 0.011900957000000002
+            },
+            "oracle_calls": {
+              "n_call_nlp_f": 6,
+              "n_call_nlp_g": 6,
+              "n_call_nlp_grad": 0,
+              "n_call_nlp_grad_f": 7,
+              "n_call_nlp_jac_g": 7
+            },
+            "window": {
+              "count": 1,
+              "mean_seconds": 0.04406916700008878,
+              "p50_seconds": 0.04406916700008878,
+              "p95_seconds": 0.04406916700008878,
+              "p99_seconds": 0.04406916700008878,
+              "max_seconds": 0.04406916700008878,
+              "deadline_misses": 0
+            }
+          },
+          "cold_detailed_check": {
+            "max_position_error_m": 0.0,
+            "max_speed_error_mps": 0.0,
+            "predicted_net_j": 2993.868438948382,
+            "detailed_net_j": 2993.868438948382,
+            "net_error_j": 0.0,
+            "drawn_error_j": 0.0,
+            "recovered_error_j": 0.0,
+            "detailed_maximum_constraint": -0.07980380146299673,
+            "detailed_feasible": true
+          },
+          "warm": {
+            "total_seconds": {
+              "mean": 0.019513250666932436,
+              "p50": 0.01858961400012049,
+              "p95": 0.022691460300256948,
+              "max": 0.02314722100027211
+            },
+            "optimizer_seconds": {
+              "mean": 0.015048840999952517,
+              "p50": 0.014522467000006145,
+              "p95": 0.018152322699734214,
+              "max": 0.018555639999704
+            },
+            "initialization_seconds": {
+              "mean": 0.0005124849999447179,
+              "p50": 0.00045045200022286735,
+              "p95": 0.0006495787996755098,
+              "max": 0.0006717039996146923
+            },
+            "postprocess_seconds": {
+              "mean": 0.0032855056667055274,
+              "p50": 0.0035385370001677074,
+              "p95": 0.0036872223997761466,
+              "max": 0.00370374299973264
+            }
+          },
+          "warm_accepted": 3,
+          "warm_deadline_misses": 0,
+          "warm_cycles": 3,
+          "warm_iterations": {
+            "mean": 1.0,
+            "p50": 1.0,
+            "p95": 1.0,
+            "max": 1.0
+          },
+          "warm_detailed_checks": [
+            {
+              "max_position_error_m": 0.0,
+              "max_speed_error_mps": 0.0,
+              "predicted_net_j": 3007.264537977559,
+              "detailed_net_j": 3007.264537977559,
+              "net_error_j": 0.0,
+              "drawn_error_j": 0.0,
+              "recovered_error_j": 0.0,
+              "detailed_maximum_constraint": -0.07980380146299673,
+              "detailed_feasible": true
+            },
+            {
+              "max_position_error_m": 0.0,
+              "max_speed_error_mps": 0.0,
+              "predicted_net_j": 3007.264537977559,
+              "detailed_net_j": 3007.264537977559,
+              "net_error_j": 0.0,
+              "drawn_error_j": 0.0,
+              "recovered_error_j": 0.0,
+              "detailed_maximum_constraint": -0.07980380146299673,
+              "detailed_feasible": true
+            },
+            {
+              "max_position_error_m": 0.0,
+              "max_speed_error_mps": 0.0,
+              "predicted_net_j": 3007.264537977559,
+              "detailed_net_j": 3007.264537977559,
+              "net_error_j": 0.0,
+              "drawn_error_j": 0.0,
+              "recovered_error_j": 0.0,
+              "detailed_maximum_constraint": -0.07980380146299673,
+              "detailed_feasible": true
+            }
+          ],
+          "last_status": "Solve_Succeeded"
+        },
+        "moving": {
+          "cold": {
+            "scenario_update_seconds": 3.21100014843978e-06,
+            "initialization_seconds": 0.006304169999566511,
+            "optimizer_seconds": 0.04747322299999723,
+            "validation_seconds": 0.00022790599996369565,
+            "replanned": true,
+            "pedestrian_gp_seconds": 0.00019885900019289693,
+            "vehicle_gp_seconds": 0.00011611299987634993,
+            "parameter_pack_seconds": 3.5909999951400096e-05,
+            "postprocess_seconds": 0.0026186330001110036,
+            "total_seconds": 0.05704723000008016,
+            "deadline_seconds": 0.05,
+            "deadline_missed": true,
+            "prediction_model": "dynamic_actuators",
+            "gp_mode": "full",
+            "object_support_points": 5,
+            "dynamic_support_counts": [
+              20,
+              20
+            ],
+            "gp_error_bounds": [
+              0.0,
+              0.0
+            ],
+            "accepted": true,
+            "iterations": 7,
+            "oracle_seconds": {
+              "t_wall_nlp_f": 0.002068035,
+              "t_wall_nlp_g": 0.002247678,
+              "t_wall_nlp_grad": 0.0,
+              "t_wall_nlp_grad_f": 0.010119585,
+              "t_wall_nlp_jac_g": 0.016980993
+            },
+            "oracle_calls": {
+              "n_call_nlp_f": 9,
+              "n_call_nlp_g": 9,
+              "n_call_nlp_grad": 0,
+              "n_call_nlp_grad_f": 9,
+              "n_call_nlp_jac_g": 9
+            },
+            "window": {
+              "count": 5,
+              "mean_seconds": 0.03193122980019325,
+              "p50_seconds": 0.02314722100027211,
+              "p95_seconds": 0.054451617400081885,
+              "p99_seconds": 0.056528107480080504,
+              "max_seconds": 0.05704723000008016,
+              "deadline_misses": 1
+            }
+          },
+          "cold_detailed_check": {
+            "max_position_error_m": 0.0,
+            "max_speed_error_mps": 0.0,
+            "predicted_net_j": -7345.334295522027,
+            "detailed_net_j": -7345.334295522027,
+            "net_error_j": 0.0,
+            "drawn_error_j": 0.0,
+            "recovered_error_j": 0.0,
+            "detailed_maximum_constraint": -0.1050876382197492,
+            "detailed_feasible": true
+          },
+          "warm": {
+            "total_seconds": {
+              "mean": 0.02470872433347419,
+              "p50": 0.026026332000128605,
+              "p95": 0.026646002700135795,
+              "max": 0.026714855000136595
+            },
+            "optimizer_seconds": {
+              "mean": 0.020878195333352778,
+              "p50": 0.022294544000033056,
+              "p95": 0.02247691189991201,
+              "max": 0.02249717499989856
+            },
+            "initialization_seconds": {
+              "mean": 0.00046472566661274567,
+              "p50": 0.00042082599975401536,
+              "p95": 0.0005504845000359637,
+              "max": 0.0005648910000672913
+            },
+            "postprocess_seconds": {
+              "mean": 0.0027965273334302765,
+              "p50": 0.0025990389999606123,
+              "p95": 0.0031596625002748625,
+              "max": 0.003221954000309779
+            }
+          },
+          "warm_accepted": 3,
+          "warm_deadline_misses": 0,
+          "warm_cycles": 3,
+          "warm_iterations": {
+            "mean": 2.6666666666666665,
+            "p50": 3.0,
+            "p95": 3.0,
+            "max": 3.0
+          },
+          "warm_detailed_checks": [
+            {
+              "max_position_error_m": 0.0,
+              "max_speed_error_mps": 0.0,
+              "predicted_net_j": -7025.530180953086,
+              "detailed_net_j": -7025.530180953086,
+              "net_error_j": 0.0,
+              "drawn_error_j": 0.0,
+              "recovered_error_j": 0.0,
+              "detailed_maximum_constraint": -0.09725928503969072,
+              "detailed_feasible": true
+            },
+            {
+              "max_position_error_m": 0.0,
+              "max_speed_error_mps": 0.0,
+              "predicted_net_j": -7272.683458690214,
+              "detailed_net_j": -7272.683458690214,
+              "net_error_j": 0.0,
+              "drawn_error_j": 0.0,
+              "recovered_error_j": 0.0,
+              "detailed_maximum_constraint": -0.09706389813121508,
+              "detailed_feasible": true
+            },
+            {
+              "max_position_error_m": 0.0,
+              "max_speed_error_mps": 0.0,
+              "predicted_net_j": -7422.656380964684,
+              "detailed_net_j": -7422.656380964684,
+              "net_error_j": 0.0,
+              "drawn_error_j": 0.0,
+              "recovered_error_j": 0.0,
+              "detailed_maximum_constraint": -0.09804097056691052,
+              "detailed_feasible": true
+            }
+          ],
+          "last_status": "Solve_Succeeded"
+        }
+      }
+    },
+    {
+      "variant": "discrete",
+      "build_seconds": 24.573472996999953,
+      "horizon": 0.5,
+      "prediction_steps": 5,
+      "stage_step": 0.005,
+      "cases": {
+        "rest": {
+          "cold": {
+            "scenario_update_seconds": 4.128000000491738e-06,
+            "initialization_seconds": 0.005377278000196384,
+            "optimizer_seconds": 0.019022539999696164,
+            "validation_seconds": 0.00029887100026826374,
+            "replanned": true,
+            "pedestrian_gp_seconds": 0.0003297539997220156,
+            "vehicle_gp_seconds": 0.00022271799980444484,
+            "parameter_pack_seconds": 6.324200012386427e-05,
+            "postprocess_seconds": 0.0019910949999939476,
+            "total_seconds": 0.02738201400006801,
+            "deadline_seconds": 0.05,
+            "deadline_missed": false,
+            "prediction_model": "dynamic_actuators",
+            "gp_mode": "full",
+            "object_support_points": 5,
+            "dynamic_support_counts": [
+              20,
+              20
+            ],
+            "gp_error_bounds": [
+              0.0,
+              0.0
+            ],
+            "accepted": true,
+            "iterations": 5,
+            "oracle_seconds": {
+              "t_wall_nlp_f": 0.0006169120000000001,
+              "t_wall_nlp_g": 0.000675216,
+              "t_wall_nlp_grad": 0.0,
+              "t_wall_nlp_grad_f": 0.003073402,
+              "t_wall_nlp_jac_g": 0.005423580000000001
+            },
+            "oracle_calls": {
+              "n_call_nlp_f": 6,
+              "n_call_nlp_g": 6,
+              "n_call_nlp_grad": 0,
+              "n_call_nlp_grad_f": 7,
+              "n_call_nlp_jac_g": 7
+            },
+            "window": {
+              "count": 1,
+              "mean_seconds": 0.02738201400006801,
+              "p50_seconds": 0.02738201400006801,
+              "p95_seconds": 0.02738201400006801,
+              "p99_seconds": 0.02738201400006801,
+              "max_seconds": 0.02738201400006801,
+              "deadline_misses": 0
+            }
+          },
+          "cold_detailed_check": {
+            "max_position_error_m": 0.000735410037711437,
+            "max_speed_error_mps": 0.0019486267084248832,
+            "predicted_net_j": 2984.653169908635,
+            "detailed_net_j": 2971.4120443237166,
+            "net_error_j": 13.241125584918336,
+            "drawn_error_j": 13.241125584918336,
+            "recovered_error_j": 0.0,
+            "detailed_maximum_constraint": -0.07980380146299673,
+            "detailed_feasible": true
+          },
+          "warm": {
+            "total_seconds": {
+              "mean": 0.010895374000028824,
+              "p50": 0.010055841000394139,
+              "p95": 0.012482880899779046,
+              "max": 0.012752551999710704
+            },
+            "optimizer_seconds": {
+              "mean": 0.007816021666561332,
+              "p50": 0.006969575999846711,
+              "p95": 0.009295037399942885,
+              "max": 0.00955342199995357
+            },
+            "initialization_seconds": {
+              "mean": 0.0004602730000442534,
+              "p50": 0.0004382120000627765,
+              "p95": 0.0005182382001294172,
+              "max": 0.0005271300001368218
+            },
+            "postprocess_seconds": {
+              "mean": 0.001905752333489848,
+              "p50": 0.0018697740001698548,
+              "p95": 0.0019914063002033798,
+              "max": 0.002004921000207105
+            }
+          },
+          "warm_accepted": 3,
+          "warm_deadline_misses": 0,
+          "warm_cycles": 3,
+          "warm_iterations": {
+            "mean": 1.0,
+            "p50": 1.0,
+            "p95": 1.0,
+            "max": 1.0
+          },
+          "warm_detailed_checks": [
+            {
+              "max_position_error_m": 0.0007423299104683534,
+              "max_speed_error_mps": 0.0019486267084248832,
+              "predicted_net_j": 3007.0065551192047,
+              "detailed_net_j": 3007.264537977559,
+              "net_error_j": -0.2579828583543531,
+              "drawn_error_j": -0.2579828583543531,
+              "recovered_error_j": 0.0,
+              "detailed_maximum_constraint": -0.07980380146299673,
+              "detailed_feasible": true
+            },
+            {
+              "max_position_error_m": 0.0007423299104683534,
+              "max_speed_error_mps": 0.0019486267084248832,
+              "predicted_net_j": 3007.0065551192047,
+              "detailed_net_j": 3007.264537977559,
+              "net_error_j": -0.2579828583543531,
+              "drawn_error_j": -0.2579828583543531,
+              "recovered_error_j": 0.0,
+              "detailed_maximum_constraint": -0.07980380146299673,
+              "detailed_feasible": true
+            },
+            {
+              "max_position_error_m": 0.0007423299104683534,
+              "max_speed_error_mps": 0.0019486267084248832,
+              "predicted_net_j": 3007.0065551192047,
+              "detailed_net_j": 3007.264537977559,
+              "net_error_j": -0.2579828583543531,
+              "drawn_error_j": -0.2579828583543531,
+              "recovered_error_j": 0.0,
+              "detailed_maximum_constraint": -0.07980380146299673,
+              "detailed_feasible": true
+            }
+          ],
+          "last_status": "Solve_Succeeded"
+        },
+        "moving": {
+          "cold": {
+            "scenario_update_seconds": 3.6320002436696086e-06,
+            "initialization_seconds": 0.005019421000270086,
+            "optimizer_seconds": 0.03117469600010736,
+            "validation_seconds": 0.00020686400011982187,
+            "replanned": true,
+            "pedestrian_gp_seconds": 0.0001571889997649123,
+            "vehicle_gp_seconds": 8.392300014747889e-05,
+            "parameter_pack_seconds": 2.9050999728497118e-05,
+            "postprocess_seconds": 0.0018181600003117637,
+            "total_seconds": 0.03856207800026823,
+            "deadline_seconds": 0.05,
+            "deadline_missed": false,
+            "prediction_model": "dynamic_actuators",
+            "gp_mode": "full",
+            "object_support_points": 5,
+            "dynamic_support_counts": [
+              20,
+              20
+            ],
+            "gp_error_bounds": [
+              0.0,
+              0.0
+            ],
+            "accepted": true,
+            "iterations": 6,
+            "oracle_seconds": {
+              "t_wall_nlp_f": 0.002496727,
+              "t_wall_nlp_g": 0.0014755179999999999,
+              "t_wall_nlp_grad": 0.0,
+              "t_wall_nlp_grad_f": 0.004467647,
+              "t_wall_nlp_jac_g": 0.0071887109999999995
+            },
+            "oracle_calls": {
+              "n_call_nlp_f": 10,
+              "n_call_nlp_g": 10,
+              "n_call_nlp_grad": 0,
+              "n_call_nlp_grad_f": 8,
+              "n_call_nlp_jac_g": 8
+            },
+            "window": {
+              "count": 5,
+              "mean_seconds": 0.019726042800084543,
+              "p50_seconds": 0.012752551999710704,
+              "p95_seconds": 0.036326065200228186,
+              "p99_seconds": 0.038114875440260224,
+              "max_seconds": 0.03856207800026823,
+              "deadline_misses": 0
+            }
+          },
+          "cold_detailed_check": {
+            "max_position_error_m": 0.0016524333138181468,
+            "max_speed_error_mps": 0.005054652142458593,
+            "predicted_net_j": -7154.548366541376,
+            "detailed_net_j": -7155.80016501813,
+            "net_error_j": 1.2517984767546295,
+            "drawn_error_j": 0.0,
+            "recovered_error_j": -1.2517984767546295,
+            "detailed_maximum_constraint": -0.11216854131015541,
+            "detailed_feasible": true
+          },
+          "warm": {
+            "total_seconds": {
+              "mean": 0.013167603666715877,
+              "p50": 0.013610204000087833,
+              "p95": 0.013681346299972575,
+              "max": 0.013689250999959768
+            },
+            "optimizer_seconds": {
+              "mean": 0.009528328666723004,
+              "p50": 0.009865421000085917,
+              "p95": 0.01009426400000848,
+              "max": 0.010119690999999875
+            },
+            "initialization_seconds": {
+              "mean": 0.00044416000006701023,
+              "p50": 0.0003900910000993463,
+              "p95": 0.0005856700002368597,
+              "max": 0.0006074010002521391
+            },
+            "postprocess_seconds": {
+              "mean": 0.002430016333467696,
+              "p50": 0.0025275040002270543,
+              "p95": 0.0026821870002549987,
+              "max": 0.0026993740002581035
+            }
+          },
+          "warm_accepted": 3,
+          "warm_deadline_misses": 0,
+          "warm_cycles": 3,
+          "warm_iterations": {
+            "mean": 2.0,
+            "p50": 2.0,
+            "p95": 2.0,
+            "max": 2.0
+          },
+          "warm_detailed_checks": [
+            {
+              "max_position_error_m": 0.0015259712666106928,
+              "max_speed_error_mps": 0.005314020869689351,
+              "predicted_net_j": -7367.813720648366,
+              "detailed_net_j": -7365.0156586478,
+              "net_error_j": -2.7980620005664605,
+              "drawn_error_j": 0.0,
+              "recovered_error_j": 2.7980620005664605,
+              "detailed_maximum_constraint": -0.1098045059280155,
+              "detailed_feasible": true
+            },
+            {
+              "max_position_error_m": 0.001467248919871711,
+              "max_speed_error_mps": 0.0054124258069805364,
+              "predicted_net_j": -7367.2581743004175,
+              "detailed_net_j": -7363.980666667644,
+              "net_error_j": -3.2775076327734496,
+              "drawn_error_j": 0.0,
+              "recovered_error_j": 3.2775076327734496,
+              "detailed_maximum_constraint": -0.10588929651768719,
+              "detailed_feasible": true
+            },
+            {
+              "max_position_error_m": 0.0014437744820572362,
+              "max_speed_error_mps": 0.005386901771045061,
+              "predicted_net_j": -7324.834332547464,
+              "detailed_net_j": -7322.421976578611,
+              "net_error_j": -2.4123559688532623,
+              "drawn_error_j": 0.0,
+              "recovered_error_j": 2.4123559688532623,
+              "detailed_maximum_constraint": -0.10251764864530255,
+              "detailed_feasible": true
+            }
+          ],
+          "last_status": "Solve_Succeeded"
+        }
+      }
+    }
+  ]
+}

@@ -158,6 +158,279 @@ Slower dynamic solves reflect the additional integration and derivative work,
 but iteration count, conditioning and infeasibility also affect runtime. Neither
 mode selection is itself evidence of safe crossing behavior.
 
+### Dynamic Actuators and Net Energy
+
+`prediction_model:=dynamic_actuators` adds the simulator's motor, torsional
+shaft, torque slew/limits, friction-brake assistance, acceleration-command
+filter, and motor-efficiency lookup to the dynamic vehicle prediction. The
+other prediction modes and the launch's saved model/sparse defaults are not
+changed. This is separate from the pending full-field GP approximation.
+
+```bash
+source /opt/ros/humble/setup.bash
+source ~/ros2_ws/install/setup.bash
+ros2 launch plan_predictive_cost_map pcm_longitudinal.launch.py \
+  prediction_model:=dynamic_actuators sparse_gp:=false weight_energy:=0.1
+```
+
+Restart the rebuilt simulator so it publishes `/simulator/actuator_state`
+(`crp_msgs/ActuatorState`). This additive message contains measured motor speed,
+motor torque, shaft twist, and the filtered acceleration request; existing
+`PowertrainTelemetry`, energy visualization, and MCAP message layouts are
+unchanged. Actuator mode waits for this input and publishes no new command when
+its receipt is older than `powertrain_state_timeout` (default 0.25 s). Other
+modes do not require actuator telemetry. Energy integration starts from zero
+at each horizon; past cumulative energy is not added to the objective.
+
+The mode optimizes four horizon-normalized speed-command coefficients. In
+each control interval, the held speed target is the polynomial evaluated at
+`min(interval_start + command_lookahead_time, horizon)`. The internal speed
+controller is feedback-only, with default gain 6, and the exact simulator
+stop-target braking rule. By default, the motor/shaft/speed subsystem uses
+matrix-exponential propagation in 5 ms stages, with stagewise updates of
+nonlinear loads, saturation and braking. The acceleration filter uses its
+exponential response; torque slew and physical limits remain active. Motor
+speed and shaft twist remain states; they are not replaced with a static gain.
+The stagewise held loads and torque averaging approximate the detailed model.
+`actuator_integration:=detailed` retains the original 1 ms simulator-style
+microstepping for comparison. Predicted motion and GP queries
+use the realized vehicle state, not the commanded speed. The published command
+is the polynomial's first held target, not the realized future speed. Existing
+profile initialization provides a positive-speed trial when starting from
+rest; accepted IPOPT output is still required, with no fallback trajectory.
+
+`actuator_vehicle_model:=dynamic` is the default and matches the current
+simulator launch. Select `kinematic` when the simulator uses that plant. Road
+loads remain in vehicle physics, not as speed-controller feedforward. Reference
+projection and pure-pursuit geometry retain the existing planner's spline-based
+approximation; matching the actuator equations does not establish exact
+closed-loop tracking on arbitrary curved roads.
+
+Motor speed/torque efficiencies are bilinearly interpolated from the same CSV
+as the simulator, with clamped axes. The LUT is not fitted, smoothed, or
+linearized. Discrete stages use two-point Gauss quadrature for electrical
+energy, separately retaining drawn and recovered energy. `motor_efficiency_map` defaults to the
+installed simulator's `config/motor_efficiency.csv`. Supply the same explicit
+path to simulator and planner when using a different map. The shipped map is
+illustrative, not measured vehicle data. All actuator settings are configurable
+on the planner under `powertrain.*`, using simulator defaults; the simulator's
+`powertrain_integration_step` corresponds to `powertrain.integration_step`.
+Its `speed_gain` and `acceleration_command_time_constant` correspond to
+`powertrain.speed_gain` and `powertrain.acceleration_command_time_constant`.
+Keep these and the `vehicle.*` physical settings aligned when customizing the
+simulator. `vehicle.control_step` controls command/steering update boundaries.
+
+```text
+P_mechanical = motor_torque * motor_speed
+P_electrical = P_mechanical / efficiency       (motoring)
+P_electrical = P_mechanical * efficiency       (regeneration)
+E_drawn = integral(max(P_electrical, 0), dt)
+E_recovered = integral(max(-P_electrical, 0), dt)
+E_net = E_drawn - E_recovered
+objective += weight_energy * E_net / energy_reference_j
+```
+
+`weight_energy` defaults to 0.1 in the launch, applies only to this new model,
+and can be set to zero to disable the energy preference without disabling
+actuator dynamics. `energy_reference_j` defaults to 100000 J. The net-energy
+term is signed and linear, not squared or clipped: regeneration reduces it.
+Speed tracking, GP safety, acceleration, and speed limits remain separate
+objective terms/constraints. GP snapshots include predicted drawn, recovered,
+and net horizon energy under `planning.energy`.
+
+Powertrain steps and coupled dynamic/kinematic vehicle responses have C++
+parity tests for acceleration, regeneration, standstill, slopes, and held
+polynomial commands. Tests also check the signed objective contribution,
+finite gradients, missing/stale state, and accepted solves from rest/motion.
+
+#### Actuator-Only Performance Settings
+
+```bash
+ros2 launch plan_predictive_cost_map pcm_longitudinal.launch.py \
+  prediction_model:=dynamic_actuators actuator_integration:=discrete \
+  actuator_stage_step:=0.005 actuator_hessian:=limited-memory actuator_jit:=true
+```
+
+These settings are read-only after startup and affect only `dynamic_actuators`;
+the other prediction models retain their original solver and rollout behavior.
+The user's saved model, horizon, GP sparsity and timing launch defaults are
+preserved. Native compilation requires a C compiler and adds startup latency;
+the four-second benchmark builds took approximately 144-162 seconds in this
+environment. This cost is separate from per-cycle solve time. Set
+`actuator_jit:=false` for interpreted evaluation. To reproduce the original
+implementation, use `actuator_integration:=detailed actuator_hessian:=exact
+actuator_jit:=false`.
+
+Saved fixed-input benchmarks compare one cold solve and repeated warm solves,
+with full GP support and the same objective/constraints. Detailed-model replay
+is outside timing and checks sampled cost, acceleration, speed and reference
+constraints. These are not closed-loop simulator acceptance tests or latency
+guarantees.
+
+Warm optimizer median milliseconds, 0.5 s horizon, five prediction points:
+
+| Configuration | Rest | Moving |
+| --- | ---: | ---: |
+| Detailed, interpreted, exact Hessian | 442 | 2608 |
+| Detailed, compiled, limited-memory | 15 | 22 |
+| Discrete 5 ms, compiled, limited-memory | 7 | 10 |
+
+At the saved four-second horizon with ten prediction points:
+
+| Configuration | Rest | Moving | Crossing | Capacity |
+| --- | ---: | ---: | ---: | ---: |
+| Detailed, compiled, limited-memory | 156 | 98 | 285 | 219 |
+| Discrete 5 ms, compiled, limited-memory | 53 | 50 | 102 | 148 |
+
+The corresponding discrete median whole-cycle times were approximately
+61/61/110/163 ms. Each configuration accepted five warm plans per case. The
+last discrete crossing replay differed from the detailed model by approximately
+0.014 m in position, 0.011 m/s in speed, and 75 J in net energy, with its sampled
+constraints satisfied. Inspect all replay results in
+`test/pcm_actuator_short_report.json` and `test/pcm_actuator_horizon_report.json`.
+
+A ten-cycle 10 ms-stage experiment is retained in
+`test/pcm_actuator_10ms_report.json`. It passed short-interval accuracy tests but
+failed the detailed-model crossing/capacity constraint tolerance (about 0.00438
+violation versus 0.002 allowed). It is not the selected default, and merely
+increasing the stage duration is not a validated speedup. A compiled exact-
+Hessian experiment was stopped during compilation after consuming roughly 75%
+of WSL memory; no runtime comparison was obtained for that option.
+
+Reproduce the validated long-horizon comparison from this package directory:
+
+```bash
+ROS_DOMAIN_ID=97 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 \
+  python3 test/benchmark_pcm_actuators.py --variants solver_only discrete \
+  --horizon 4.0 --steps 10 --cycles 5 --cases rest moving crossing capacity \
+  --output test/pcm_actuator_horizon_report.json
+```
+
+**Runtime limitation:** the speedup is substantial, but the four-second
+actuator mode still does not reliably meet a 50 ms whole-cycle deadline. Cold
+solves, native compilation, viewer load, logging, ROS traffic and scenario
+changes must be considered separately. No safety tolerance or acceptance rule
+was relaxed to obtain these measurements. The GP full-field approximation is
+still not implemented, and no geometric fallback was introduced.
+
+### Dynamic GP Compression and Timing
+
+Full mode remains the default and retains the original GP fitting, support
+counts, objective, and sampled safety constraints:
+
+```bash
+ros2 launch plan_predictive_cost_map pcm_longitudinal.launch.py \
+  prediction_model:=dynamic_light sparse_gp:=false timing_enabled:=true
+```
+
+Enable experimental object-mean compression independently of the vehicle model:
+
+```bash
+ros2 launch plan_predictive_cost_map pcm_longitudinal.launch.py \
+  prediction_model:=dynamic_light sparse_gp:=true object_support_points:=9 \
+  timing_enabled:=true
+```
+
+Restart the planner when changing `sparse_gp` or `object_support_points`; both
+are read-only startup parameters because the symbolic support dimensions change.
+`object_support_points` defaults to 9 and must be between 2 and
+`prediction_steps` in sparse mode. It is ignored in full mode. The existing
+`prediction_steps` still controls ego safety-check times and the original full
+object GP fit. Static target/drivable GPs and dynamic-light dense constraints
+are unchanged. No additional object or prediction branch is discarded by
+compression; the existing `max_pedestrians`, `max_vehicles`, and
+`max_predicted_paths` capacity limits still apply.
+
+Compression first fits the original full GP, including its original existence,
+branch-confidence, and time-dependent noise treatment. It selects a separate
+budget of original supports per retained branch by farthest-point sampling in
+the kernel-scaled XY-time metric. It then projects the full kernel mean onto
+the selected kernel basis, using a small numerical ridge:
+
+```text
+full mean(q) = k(q, Z) * alpha
+(K(U,U) + ridge*I) * beta = K(U,Z) * alpha
+compressed mean(q) = k(q, U) * beta
+residual coefficients = alpha - beta embedded at the selected indices
+error_bound = kernel_scale * sqrt(residual' * K(Z,Z) * residual + rounding_buffer)
+```
+
+The RKHS Cauchy-Schwarz inequality bounds the absolute mean error at any query
+in exact arithmetic. A floating-point rounding buffer is included; this is not
+an interval-arithmetic certificate. Each compressed dynamic layer uses
+`compressed mean + error_bound - 1` in the existing combination, making the
+combined field an upper approximation of the original field, subject to numeric
+precision. The viewer receives the same bound-adjusted layer offsets. The bound
+is approximation error, not a new existence probability or posterior variance.
+With a budget equal to `prediction_steps`, the original coefficients are kept
+exactly and the error bound is zero. No geometric collision override, fallback
+trajectory, or full-surface/progress-time surrogate is introduced.
+
+This reduces kernel terms inside optimization, not the original fitting cost.
+Additional projection work happens outside IPOPT. A loose global error bound
+can increase conservatism or make an otherwise feasible problem infeasible;
+rejected solutions still do not publish a replacement command or trajectory.
+The bound only relates the two cost fields, not real-world safety or constraint
+satisfaction between prediction samples.
+
+`timing_enabled:=true` publishes JSON on `/plan/pcm_longitudinal/timing`,
+independently of the GP viewer:
+
+```bash
+ros2 topic echo /plan/pcm_longitudinal/timing
+```
+
+Records separate scenario-update handling, pedestrian/vehicle fitting,
+parameter packing, initial-guess preparation, IPOPT, validation, and
+postprocessing/publication times. They include replanning/rejection status,
+support counts, error bounds, solver oracle timing/call statistics when
+available, and a 200-cycle rolling mean/p50/p95/p99/max/deadline-miss summary.
+`planning.solve_seconds` now measures only the solver call. Total cycle time
+includes existing logging/publication but excludes encoding/publishing the
+timing diagnostic itself. Profiling is disabled by default.
+
+#### Step 1/2 Partial Measurements
+
+Reproduce the fixed-input comparison from this package directory after sourcing
+ROS and the workspace installation:
+
+```bash
+ROS_DOMAIN_ID=97 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 \
+  python3 test/benchmark_pcm_sparse.py --mode both --supports 5 9 --cycles 30 \
+  --output test/pcm_sparse_benchmark_report.json
+```
+
+The harness uses saved launch settings, a four-second horizon, ten ego prediction
+samples, straight-road geometry, and clear/crossing/full-capacity scenarios. Each
+case has one cold solve and 30 measured warm callbacks, with logging suppressed.
+These are synchronous fixed-input benchmarks, not MCAP replay or closed-loop
+simulator results. ROS traffic, scenario-worker contention, viewer load, and
+diagnostic encoding overhead are not represented. Timing varied between runs;
+the saved report does not establish a reliable real-time speedup.
+
+Latest warm-cycle median times in milliseconds:
+
+| Case | Full, 10 supports | Sparse, 5 supports | Sparse, 9 supports |
+| --- | ---: | ---: | ---: |
+| Clear | 12.2 | 8.6 | 19.1 |
+| Crossing | 56.7 | 50.8 | 72.5 |
+| Full capacity | 55.5 | 133.2 | 67.1 |
+
+Full and nine-support modes accepted all 30 warm plans per case. Five-support
+mode accepted no full-capacity plans because the conservative vehicle-layer
+bound reached about 1.07. Nine supports restored acceptance but still missed
+the 50 ms budget in all crossing/full-capacity cycles in the consolidated run.
+The nine-support default is an experimental, less aggressive starting point,
+not a deadline guarantee. The full mode remains recommended pending discussion.
+
+On the sampled XY-time grid, five-support maximum raw mean errors were about
+0.048 for pedestrians and 0.550 for vehicles; nine supports reduced these to
+about 0.001 and up to 0.261 respectively. Fast vehicle motion relative to the
+kernel length scales was substantially harder to compress than pedestrian
+motion. Grid validation also records gradient errors; it is not how the global
+RKHS error bound is obtained. Original GP fitting was a small fraction of the
+cycle compared with IPOPT. Step 3 is deliberately not implemented.
+
 ### Longitudinal Dynamic Light
 
 `dynamic_light` uses inverse longitudinal dynamics, without forward integration.

@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
 
+import os
+os.environ.setdefault('OPENBLAS_NUM_THREADS', '1')
+os.environ.setdefault('OMP_NUM_THREADS', '1')
+
 from timeit import default_timer
 import collections
 import json
@@ -21,6 +25,7 @@ from crp_msgs.msg import Scenario
 from autoware_planning_msgs.msg import TrajectoryPoint
 from autoware_planning_msgs.msg import Trajectory
 from crp_msgs.msg import Ego
+from crp_msgs.msg import ActuatorState
 from std_msgs.msg import String
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from rcl_interfaces.msg import ParameterDescriptor
@@ -33,10 +38,11 @@ import matplotlib.patches as patches
 import time
 from rclpy.executors import MultiThreadedExecutor
 import threading
-from plan_predictive_cost_map.pcm_kernels import lane_kernel, numeric_rbf_kernel, rbf_kernel
+from plan_predictive_cost_map.pcm_kernels import compress_rbf_mean, lane_kernel, numeric_rbf_kernel, rbf_kernel
 from plan_predictive_cost_map.pcm_lane_geometry import fit_drivable_gp, prepare_progress_reference
 from plan_predictive_cost_map.pcm_longitudinal_dynamics import build_dynamic_light_rollout, build_dynamic_rollout, build_kinematic_rollout, dynamic_light_sample_times, shift_velocity_coefficients, velocity_polynomial, velocity_profile_coefficients
 from plan_predictive_cost_map.planner.config import VehicleConfig
+from plan_predictive_cost_map.pcm_sqp import DenseSQPSolver
 from plan_predictive_cost_map.pcm_scenario import (
     ObjectState, PredictionBranch, ScenarioSettings, parse_scenario, scenario_worker)
 import multiprocessing
@@ -76,12 +82,20 @@ class pcm_node(Node):
         # 1. Initialize Horizon and Symbols
         self.prediction_model = self.declare_parameter(
             'prediction_model', 'dynamic', ParameterDescriptor(read_only=True,
-                description='Prediction model selected at startup: kinematic, dynamic_light or dynamic')).value
-        if self.prediction_model not in ('kinematic', 'dynamic_light', 'dynamic'):
-            raise ValueError('prediction_model must be kinematic, dynamic_light or dynamic')
+                description='Prediction model selected at startup: kinematic, dynamic_light, dynamic or dynamic_actuators')).value
+        if self.prediction_model not in ('kinematic', 'dynamic_light', 'dynamic', 'dynamic_actuators'):
+            raise ValueError('prediction_model must be kinematic, dynamic_light, dynamic or dynamic_actuators')
+        self.actuators_enabled = self.prediction_model == 'dynamic_actuators'
+        self.powertrain_state = np.zeros(4)
+        self.powertrain_last_update = -math.inf
+        self.powertrain_timeout = self.declare_parameter('powertrain_state_timeout', 0.25).value
+        if not math.isfinite(self.powertrain_timeout) or self.powertrain_timeout <= 0.0:
+            raise ValueError('powertrain_state_timeout must be finite and positive')
         self.tau_h = self.declare_parameter('lookahead_time', 4.0).value
         self.N = self.declare_parameter('prediction_steps', 20).value
         self.timer_period = self.declare_parameter('timer_period', 0.05).value
+        self.timing_enabled = self.declare_parameter('timing_enabled', False).value
+        self.timing_history = collections.deque(maxlen=200)
         self.target_speed = 0.0
         self.command_lookahead_time = self.declare_parameter('command_lookahead_time', 0.25).value
         self.lane_noise_std = self.declare_parameter('lane_noise_std', 0.001).value
@@ -138,13 +152,59 @@ class pcm_node(Node):
         self.use_road_gradient = self.declare_parameter('vehicle.use_road_gradient', True).value
         self.model_road_pitch = self.declare_parameter('vehicle.road_pitch', 0.0).value
         self.light_constraint_step = self.declare_parameter('dynamic_light.constraint_step', 0.1).value
+        self.actuator_vehicle_model = self.declare_parameter('actuator_vehicle_model', 'dynamic').value
+        configured_efficiency_map = self.declare_parameter('motor_efficiency_map', '').value
+        actuator_descriptor = ParameterDescriptor(read_only=True,
+            description='Actuator-only integration/solver setting; requires planner restart')
+        self.actuator_integration = self.declare_parameter('actuator_integration', 'discrete', actuator_descriptor).value
+        self.actuator_stage_step = self.declare_parameter('actuator_stage_step', 0.005, actuator_descriptor).value
+        self.actuator_hessian = self.declare_parameter('actuator_solver.hessian', 'limited-memory', actuator_descriptor).value
+        self.actuator_jit = self.declare_parameter('actuator_solver.jit', True, actuator_descriptor).value
+        self.actuator_method = self.declare_parameter('actuator_solver.method', 'ipopt', actuator_descriptor).value
+        self.light_solver_enabled = self.prediction_model in ('kinematic', 'dynamic_light')
+        solver_descriptor = ParameterDescriptor(read_only=True, description='Light-model solver setting; requires planner restart')
+        self.light_solver_method = self.declare_parameter('planner_solver.method', 'sqp', solver_descriptor).value
+        self.light_solver_jit = self.declare_parameter('planner_solver.jit', True, solver_descriptor).value
+        self.light_solver_hessian = self.declare_parameter('planner_solver.hessian', 'limited-memory', solver_descriptor).value
+        self.uses_sqp = ((self.actuators_enabled and self.actuator_method == 'sqp') or
+                 (self.light_solver_enabled and self.light_solver_method == 'sqp'))
+        self.solver_jit = self.light_solver_jit if self.light_solver_enabled else self.actuator_jit
+        self.solver_hessian = self.light_solver_hessian if self.light_solver_enabled else self.actuator_hessian
+        self.efficiency_model = self.declare_parameter('actuator_efficiency.model', 'lut', actuator_descriptor).value
+        self.efficiency_degree = self.declare_parameter('actuator_efficiency.degree', 4, actuator_descriptor).value
+        self.efficiency_tolerance = self.declare_parameter('actuator_efficiency.tolerance', 0.05,
+                                                           actuator_descriptor).value
         if (not math.isfinite(self.model_control_step) or self.model_control_step <= 0.0
                 or (self.prediction_model != 'kinematic' and self.model_control_step > self.dt)
                 or not math.isfinite(self.light_constraint_step) or self.light_constraint_step <= 0.0
                 or (self.prediction_model == 'dynamic_light' and self.light_constraint_step > self.dt)
                 or not math.isfinite(self.model_road_pitch) or abs(self.model_road_pitch) >= math.pi / 2.0):
             raise ValueError('Invalid vehicle control step, light constraint step or road pitch')
-        if self.prediction_model == 'dynamic':
+        if self.actuators_enabled:
+            from pathlib import Path
+            from ament_index_python.packages import get_package_share_directory
+            from plan_predictive_cost_map.pcm_powertrain import PowertrainConfig, motor_efficiency_function
+
+            powertrain_defaults = PowertrainConfig()
+            self.powertrain_settings = PowertrainConfig(**{
+                setting.name: self.declare_parameter('powertrain.' + setting.name,
+                                                      getattr(powertrain_defaults, setting.name)).value
+                for setting in fields(powertrain_defaults)})
+            self.motor_efficiency_map = configured_efficiency_map or str(Path(get_package_share_directory('simulator')) /
+                                                        'config/motor_efficiency.csv')
+            fit_errors = {}
+            efficiency = motor_efficiency_function(self.motor_efficiency_map, self.efficiency_model,
+                                                   self.efficiency_degree, self.efficiency_tolerance, fit_errors)
+            for mode, error in fit_errors.items():
+                self.get_logger().info(f'{self.efficiency_model} {mode} efficiency fit vs LUT: '
+                                       f'max {error["max_error"]:.4f}, rms {error["rms_error"]:.4f}, '
+                                       f'rank {error["rank"]}')
+            self.model_rollout = build_dynamic_rollout(
+                self.tau_h, self.N, self.model_control_step, self.command_lookahead_time,
+                self.vehicle_settings, self.use_road_gradient, self.model_road_pitch, self.reference_samples,
+                self.powertrain_settings, efficiency, self.actuator_vehicle_model,
+                self.actuator_integration, self.actuator_stage_step)
+        elif self.prediction_model == 'dynamic':
             self.model_rollout = build_dynamic_rollout(
                 self.tau_h, self.N, self.model_control_step, self.command_lookahead_time,
                 self.vehicle_settings, self.use_road_gradient, self.model_road_pitch, self.reference_samples)
@@ -184,13 +244,23 @@ class pcm_node(Node):
         self.max_pedestrians = self.declare_parameter('max_pedestrians', 2).value
         self.max_vehicles = self.declare_parameter('max_vehicles', 2).value
         self.max_predicted_paths = self.declare_parameter('max_predicted_paths', 2).value
+        self.sparse_gp = self.declare_parameter(
+            'sparse_gp', False, ParameterDescriptor(read_only=True,
+                description='Compress the original dynamic GP mean; requires planner restart')).value
+        self.object_support_points = self.declare_parameter(
+            'object_support_points', 9, ParameterDescriptor(read_only=True,
+                description='Kernel supports per object branch in sparse mode; independent of prediction_steps')).value
+        if self.sparse_gp and not 2 <= self.object_support_points <= self.N:
+            raise ValueError('object_support_points must lie between 2 and prediction_steps in sparse mode')
+        self.exact_gp_capacity = self.prediction_model in ('kinematic', 'dynamic_light', 'dynamic_actuators')
+        support_steps = self.object_support_points if self.sparse_gp and not self.exact_gp_capacity else self.N
         self.dynamic_gp_state = {}
         self.ay_max = self.declare_parameter('max_lateral_acceleration', 3.0).value
         self.ax_max = self.declare_parameter('max_longitudinal_acceleration', 5.0).value
         if self.max_pedestrians < 1 or self.max_vehicles < 1 or self.max_predicted_paths < 1:
             raise ValueError('object and predicted-path limits must be at least 1')
-        self.pedestrian_support_count = self.max_pedestrians * self.max_predicted_paths * self.N
-        self.vehicle_support_count = self.max_vehicles * self.max_predicted_paths * self.N
+        self.pedestrian_support_count = self.max_pedestrians * self.max_predicted_paths * support_steps
+        self.vehicle_support_count = self.max_vehicles * self.max_predicted_paths * support_steps
         if any(not math.isfinite(value) or value <= 0.0 for value in (self.ay_max, self.ax_max)):
             raise ValueError('acceleration limits must be finite and positive')
         self.pedestrian_cost_primitive = self.declare_parameter('pedestrian_cost', 3.0).value
@@ -217,26 +287,31 @@ class pcm_node(Node):
 
         self.z_pedestrians_sym = ca.MX.sym('z_pedestrians_sym', self.pedestrian_support_count, 3)
         self.z_vehicles_sym = ca.MX.sym('z_vehicles_sym', self.vehicle_support_count, 3)
-        self.dynamic_context_sym = ca.MX.sym('dynamic_context', 13)
+        self.dynamic_context_sym = ca.MX.sym('dynamic_context', 17 if self.actuators_enabled else 13)
+        self.powertrain_input_sym = ca.MX.sym('powertrain_initial', 4) if self.actuators_enabled else ca.DM.zeros(0, 1)
         self.reference_sym = ca.MX.sym('progress_reference_data', 2 + 6 * self.reference_samples)
         self.target_gp_points_sym = ca.MX.sym('target_gp_points', self.target_support_points, 2)
         self.target_gp_alpha_sym = ca.MX.sym('target_gp_alpha', self.target_support_points)
         self.drivable_points_sym = ca.MX.sym('drivable_points', self.drivable_support_points, 2)
         self.drivable_alpha_sym = ca.MX.sym('drivable_alpha', self.drivable_support_points)
+        self.dynamic_gp_error_sym = ca.MX.sym('dynamic_gp_error', 2) if self.sparse_gp else ca.DM.zeros(0, 1)
         self.p_sym = ca.vertcat(ca.MX.sym('v_0'), ca.MX.sym('c_ego', 4, 1), ca.MX.sym('c_el', 4, 1), ca.MX.sym('c_ol', 4, 1), ca.MX.sym('alpha_ped', self.pedestrian_support_count, 1), ca.reshape(self.z_pedestrians_sym, -1, 1),
                                 ca.MX.sym('alpha_veh', self.vehicle_support_count, 1), ca.reshape(self.z_vehicles_sym, -1, 1),
                                 ca.reshape(self.target_gp_points_sym, -1, 1), self.target_gp_alpha_sym,
                                 ca.reshape(self.drivable_points_sym, -1, 1), self.drivable_alpha_sym,
                                 self.reference_sym,
-                                self.dynamic_context_sym, ca.MX.sym('target_speed'))
+                                self.dynamic_context_sym, self.powertrain_input_sym,
+                                self.dynamic_gp_error_sym, ca.MX.sym('target_speed'))
 
         context = self.dynamic_context_sym
         initial = ca.vertcat(context[5:9], self.p_sym[0], context[0:2])
         light = self.prediction_model == 'dynamic_light'
-        prediction = self.model_rollout.call([self.c_sym, initial, context[3], context[4],
-                                              self.p_sym[1:5], context[9:13], context[2], self.reference_sym],
-                                             light, False)
-        shared_prediction = prediction if light else None
+        rollout_inputs = [self.c_sym, initial, context[3], context[4],
+                          self.p_sym[1:5], context[9:13], context[2], self.reference_sym]
+        if self.actuators_enabled:
+            rollout_inputs.append(self.powertrain_input_sym)
+        prediction = self.model_rollout.call(rollout_inputs, light, False)
+        shared_prediction = prediction if light or self.actuators_enabled or self.light_solver_enabled else None
         self.rollout_eval = ca.Function(self.prediction_model + '_prediction', [self.c_sym, self.p_sym], list(prediction))
         positions, speeds, accelerations, requested_acceleration, command_speed, steering, dense_requests = prediction[:7]
         self.command_eval = ca.Function(self.prediction_model + '_velocity_command', [self.c_sym, self.p_sym], [command_speed])
@@ -270,7 +345,8 @@ class pcm_node(Node):
             g_ay_upper,
             g_ay_lower,
         )
-        if self.prediction_model != 'kinematic':
+        # Actuator requests are already clipped to these limits inside the rollout, so the rows would be redundant.
+        if self.prediction_model != 'kinematic' and not self.actuators_enabled:
             self.g = ca.vertcat(self.g, dense_requests - self.vehicle_settings.maximum_acceleration,
                                 -self.vehicle_settings.maximum_deceleration - dense_requests)
         if self.prediction_model == 'dynamic_light':
@@ -279,6 +355,8 @@ class pcm_node(Node):
             dense_speed = velocity_polynomial(dense_times, self.c_sym, self.p_sym[0], self.tau_h)[0]
             self.g = ca.vertcat(self.g, -dense_speed,
                                 dense_speed - ca.fmax(self.p_sym[-1], self.p_sym[0]))
+        if self.actuators_enabled:
+            self.g = ca.vertcat(self.g, prediction[14] - ca.fmax(self.p_sym[-1], self.p_sym[0]))
         self.g = ca.vertcat(self.g, prediction[9] - self.reference_sym[1])
 
         # 1. Get the individual cost terms (Symbolic)
@@ -298,12 +376,20 @@ class pcm_node(Node):
         w_ay = self.declare_parameter('weight_lateral_acceleration', 0.5).value
         w_ax = self.declare_parameter('weight_acceleration', 0.0).value
         w_crash = self.declare_parameter('weight_crash', 1.0).value
-        if any(not math.isfinite(value) or value < 0.0 for value in (w_safety, w_vel, w_ay, w_ax, w_crash)):
+        self.weight_energy = self.declare_parameter('weight_energy', 0.1 if self.actuators_enabled else 0.0).value
+        self.energy_reference_j = self.declare_parameter('energy_reference_j', 100000.0).value
+        if not math.isfinite(self.energy_reference_j) or self.energy_reference_j <= 0.0:
+            raise ValueError('energy_reference_j must be finite and positive')
+        if any(not math.isfinite(value) or value < 0.0 for value in
+               (w_safety, w_vel, w_ay, w_ax, w_crash, self.weight_energy)):
             raise ValueError('objective weights must be finite and nonnegative')
         
         # 3. Combine into final Objective
         # We also keep the regularization for steering smoothness (c_lat)
         obj = (w_safety * cost_safety) + (w_vel * cost_velocity) + (w_ay * cost_ay) + (w_ax * cost_ax) + (w_crash * cost_crash)
+        if self.actuators_enabled:
+            obj += self.weight_energy * prediction[12] / self.energy_reference_j
+            self.energy_eval = ca.Function('predicted_net_energy', [self.c_sym, self.p_sym], prediction[10:13])
 
         # 6. Setup and Solve NLP
         nlp = {'x': self.c_sym, 'f': obj, 'g': self.g, 'p': self.p_sym}
@@ -313,15 +399,46 @@ class pcm_node(Node):
             'ipopt.tol':self.solver_tolerance,
             'ipopt.warm_start_init_point':'yes',
         }
-        
-        self.solver = ca.nlpsol('solver', 'ipopt', nlp, opts)
-        if light:
-            # A feasible shifted plan is already near the optimum, so start with a small barrier.
-            self.light_warm_solver = ca.nlpsol('light_warm_solver', 'ipopt', nlp, {
-                **opts, 'ipopt.mu_init': 1e-3, 'ipopt.warm_start_bound_push': 1e-6,
-                'ipopt.warm_start_slack_bound_push': 1e-6, 'ipopt.warm_start_mult_bound_push': 1e-6})
-            self.nlp_objective = self.solver.get_function('nlp_f')
-            self.nlp_constraints = self.solver.get_function('nlp_g')
+        if self.actuators_enabled:
+            if self.actuator_hessian not in ('exact', 'limited-memory'):
+                raise ValueError('actuator_solver.hessian must be exact or limited-memory')
+            if self.actuator_method not in ('ipopt', 'sqp'):
+                raise ValueError('actuator_solver.method must be ipopt or sqp')
+            opts['ipopt.hessian_approximation'] = self.actuator_hessian
+        if self.light_solver_enabled:
+            if self.light_solver_method not in ('ipopt', 'sqp') or self.light_solver_hessian not in ('exact', 'limited-memory'):
+                raise ValueError('Invalid planner_solver method or Hessian strategy')
+            opts['ipopt.hessian_approximation'] = self.light_solver_hessian
+        if self.uses_sqp:
+            # Dense active-set SQP: one shared Jacobian of [f; g] per iteration instead of separate gradients.
+            sqp_options = {key: value for key, value in opts.items() if not key.startswith('ipopt.')}
+            sqp_options.update(
+                qpsol='qrqp', hessian_approximation=self.solver_hessian, max_iter=30,
+                tol_pr=self.solver_tolerance, tol_du=self.solver_tolerance, print_header=False,
+                print_iteration=False, print_status=False,
+                qpsol_options={'print_iter': False, 'print_header': False, 'error_on_fail': False})
+            from plan_predictive_cost_map.pcm_sqp import DenseSQPSolver
+            problem = self.compiled_nlp('sqpmethod', nlp, sqp_options) if self.solver_jit else nlp
+            oracle = ca.nlpsol('solver', 'sqpmethod', problem, sqp_options)
+            self.solver = DenseSQPSolver(oracle, self.solver_tolerance)
+            self.light_warm_solver = self.solver
+            retry_options = {**opts, 'ipopt.max_iter': 100, 'ipopt.max_cpu_time': 0.5}
+            retry_problem = self.compiled_nlp('ipopt', nlp, retry_options) if self.solver_jit else nlp
+            self.actuator_retry_solver = ca.nlpsol('actuator_retry', 'ipopt', retry_problem, retry_options)
+            objective_constraints = self.solver.get_function('nlp_fg')
+            self.nlp_objective = lambda c, p: objective_constraints(c, p)[0]
+            self.nlp_constraints = lambda c, p: objective_constraints(c, p)[1]
+        else:
+            problem = (self.compiled_nlp('ipopt', nlp, opts)
+                       if (self.actuators_enabled or self.light_solver_enabled) and self.solver_jit else nlp)
+            self.solver = ca.nlpsol('solver', 'ipopt', problem, opts)
+            if light or self.actuators_enabled or self.light_solver_enabled:
+                # A feasible shifted plan is already near the optimum, so start with a small barrier.
+                self.light_warm_solver = ca.nlpsol('light_warm_solver', 'ipopt', problem, {
+                    **opts, 'ipopt.mu_init': 1e-3, 'ipopt.warm_start_bound_push': 1e-6,
+                    'ipopt.warm_start_slack_bound_push': 1e-6, 'ipopt.warm_start_mult_bound_push': 1e-6})
+                self.nlp_objective = self.solver.get_function('nlp_f')
+                self.nlp_constraints = self.solver.get_function('nlp_g')
         self.light_previous = None
         self.light_previous_time = 0.0
         self.light_multipliers = {}
@@ -351,6 +468,13 @@ class pcm_node(Node):
 )   
         
 
+        if self.actuators_enabled or self.light_solver_enabled:
+            self.reporting_prediction_count = len(prediction)
+            reporting = ca.Function('actuator_reporting', [self.c_sym, self.p_sym],
+                                    [*prediction, fsup_vec, *gp_state])
+            self.reporting_eval = (ca.external('actuator_reporting', self.compiled_nlp('report', reporting, {}))
+                                   if self.solver_jit else reporting)
+
         # create publishers/subscribers
         self.get_logger().info(f'Prediction model: {self.prediction_model}')
         self.timer = self.create_timer(self.timer_period, self.callback)
@@ -360,6 +484,9 @@ class pcm_node(Node):
         self.trajectory_pub = self.create_publisher(Trajectory, '/plan/trajectory', 30)
         self.gp_state_pub = self.create_publisher(
             String, '/plan/pcm_longitudinal/gp_state',
+            QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT))
+        self.timing_pub = self.create_publisher(
+            String, '/plan/pcm_longitudinal/timing',
             QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT))
 
         if self.declare_parameter('scenario_worker', True).value:
@@ -383,9 +510,21 @@ class pcm_node(Node):
         self.ego_sub = self.create_subscription(
             Ego, '/ego', self.ego_callback, 1
             )
+        if self.actuators_enabled:
+            self.powertrain_sub = self.create_subscription(
+                ActuatorState, '/simulator/actuator_state', self.powertrain_callback, 1)
 
     def softplus(self, x, beta=10):
         return ca.log(1 + ca.exp(beta*x))/beta
+
+    def powertrain_callback(self, message):
+        values = np.asarray([message.motor_speed_rad_s, message.shaft_twist_rad,
+                             message.motor_torque_nm, message.filtered_acceleration_mps2])
+        if not np.isfinite(values).all() or values[0] < 0.0:
+            self.get_logger().warn('Ignoring invalid powertrain state', throttle_duration_sec=2.0)
+            return
+        self.powertrain_state = values
+        self.powertrain_last_update = default_timer()
 
     def ego_callback(self, input_msg):
         pose = input_msg.pose.pose
@@ -485,13 +624,53 @@ class pcm_node(Node):
                     Z_el, y_el, p_el,
                     Z_ol, y_ol, p_ol,
                     alpha_el, alpha_ol, alpha_ped, alpha_veh):
-        avg_dyn = self.smooth_max( self.f_dyn(X, Z_ped, y_ped, p_ped, 1, alpha_ped),
-                        self.f_dyn(X, Z_veh, y_veh, p_veh, 1, alpha_veh))
+        pedestrian = self.f_dyn(X, Z_ped, y_ped, p_ped, 1, alpha_ped)
+        vehicle = self.f_dyn(X, Z_veh, y_veh, p_veh, 1, alpha_veh)
+        if self.sparse_gp:
+            pedestrian += self.dynamic_gp_error_sym[0]
+            vehicle += self.dynamic_gp_error_sym[1]
+        avg_dyn = self.smooth_max(pedestrian, vehicle)
 
         min_dyn = ca.fmin(self.f_dyn_(X, Z_el, y_el, p_el, 1, alpha_el),
                         self.f_dyn_(X, Z_ol, y_ol, p_ol, 1, alpha_ol))
         
         return self.smooth_max(avg_dyn,min_dyn)
+
+    def compiled_nlp(self, plugin, nlp, options):
+        # Compile the NLP oracle once; later starts reuse the library when the generated code is unchanged.
+        import hashlib
+        import os
+        from pathlib import Path
+        import subprocess
+        import tempfile
+
+        flags = ['-O2', '-fPIC', '-shared']
+        cache = Path(os.environ.get('XDG_CACHE_HOME', Path.home() / '.cache')) / 'pcm_longitudinal'
+        cache.mkdir(mode=0o700, parents=True, exist_ok=True)
+        is_function = isinstance(nlp, ca.Function)
+        generator = nlp if is_function else ca.nlpsol('generator', plugin, nlp, options)
+        previous = os.getcwd()
+        with tempfile.TemporaryDirectory(dir=cache) as work:
+            os.chdir(work)
+            try:
+                if is_function:
+                    generator.generate('pcm_nlp.c', {'with_header': False})
+                else:
+                    generator.generate_dependencies('pcm_nlp.c', {'with_header': False})
+            finally:
+                os.chdir(previous)
+            source = Path(work) / 'pcm_nlp.c'
+            digest = hashlib.sha256(source.read_bytes() + ' '.join(flags + [plugin, ca.__version__]).encode())
+            library = cache / f'{plugin}_{digest.hexdigest()[:20]}.so'
+            if library.exists():
+                self.get_logger().info(f'Using cached compiled planner NLP {library}')
+                return str(library)
+            self.get_logger().warn(f'Compiling planner NLP once to {library}; this takes a few minutes')
+            started = default_timer()
+            subprocess.run(['gcc', *flags, str(source), '-o', str(Path(work) / 'pcm_nlp.so')], check=True)
+            os.replace(Path(work) / 'pcm_nlp.so', library)
+            self.get_logger().info(f'Compiled planner NLP in {default_timer() - started:.0f} s')
+        return str(library)
 
     def cost_sup(self, c, p, include_gp_state=False, prediction=None):
 
@@ -516,8 +695,15 @@ class pcm_node(Node):
             prediction = self.rollout_eval(c, p)
         x_ego = prediction[0][:, 0]
         y_ego = prediction[0][:, 1]
+        query_times = self.t
+        if self.actuators_enabled:
+            offset_x, offset_y, yaw, age = ca.vertsplit(self.dynamic_context_sym[13:17])
+            scene_x = offset_x + ca.cos(yaw) * x_ego - ca.sin(yaw) * y_ego
+            scene_y = offset_y + ca.sin(yaw) * x_ego + ca.cos(yaw) * y_ego
+            x_ego, y_ego = scene_x, scene_y
+            query_times = self.t + age
         # We must transpose to get [N x 3] so it matches the Kernel 'X' logic
-        ego_traj = ca.horzcat(x_ego, y_ego, self.t)
+        ego_traj = ca.horzcat(x_ego, y_ego, query_times)
 
         # 2. Generate Inducing Points for Lanes (Inducing points along ego x-path)
         # These create the "Safe/Unsafe" zones for the GP
@@ -604,6 +790,7 @@ class pcm_node(Node):
         confidence = np.zeros(count)
         times = np.asarray(self.t).flatten()
         used = 0
+        groups = []
         dropped_branches = 0
         for obj in objects[:max_objects]:
             if obj.existence_probability <= 0.0:
@@ -615,6 +802,7 @@ class pcm_node(Node):
             dropped_branches += max(0, len(branches) - self.max_predicted_paths)
             for branch in branches[:self.max_predicted_paths]:
                 section = slice(used, used + self.N)
+                groups.append(np.arange(used, used + self.N))
                 points[section] = np.column_stack((self.sample_object_path(obj, branch), times))
                 existence[section] = np.clip(obj.existence_probability, 0.0, 1.0)
                 confidence[section] = np.clip(branch.confidence, 0.0, 1.0)
@@ -631,6 +819,30 @@ class pcm_node(Node):
         alpha = np.linalg.solve(matrix + np.diag(noise), targets)
         metadata = {'targets': targets.tolist(), 'noise_variances': noise.tolist(),
                     'existence_probability': existence.tolist(), 'trajectory_confidence': confidence.tolist()}
+        if getattr(self, 'sparse_gp', False):
+            selected, beta, bound = compress_rbf_mean(
+                points, alpha, kernel, groups, self.object_support_points, matrix)
+            exact_capacity = getattr(self, 'exact_gp_capacity', getattr(self, 'actuators_enabled', False))
+            reduced_count = max_objects * self.max_predicted_paths * (self.N if exact_capacity else self.object_support_points)
+            floor = -1.0 + 0.5 * (bound + math.sqrt(bound * bound + 0.01))
+            if exact_capacity and floor > self.max_gp_cost:
+                metadata.update(error_bound=0.0, source_support_count=count,
+                    active_support_count=used, represented_branches=len(groups),
+                    selected_source_indices=list(range(used)), compression='original_full_mean',
+                    rejected_compression_error_bound=bound)
+                return points, alpha, metadata
+            reduced_points = np.full((reduced_count, 3), 1000.0)
+            reduced_alpha = np.zeros(reduced_count)
+            reduced_points[:len(selected)] = points[selected]
+            reduced_alpha[:len(selected)] = beta
+            metadata = {name: np.r_[np.asarray(values)[selected],
+                                   np.zeros(reduced_count - len(selected))].tolist()
+                        for name, values in metadata.items()}
+            metadata.update(error_bound=bound, source_support_count=count,
+                            active_support_count=len(selected), represented_branches=len(groups),
+                            selected_source_indices=selected.tolist(),
+                            compression='original_mean_rkhs_projection')
+            return reduced_points, reduced_alpha, metadata
         return points, alpha, metadata
 
     def callback(self):
@@ -653,16 +865,29 @@ class pcm_node(Node):
         if not self.lane_received:
             self.get_logger().warn("Waiting for lane data...")
             return
-        
+        if self.actuators_enabled and default_timer() - self.powertrain_last_update > self.powertrain_timeout:
+            self.get_logger().warn('Waiting for fresh powertrain telemetry', throttle_duration_sec=2.0)
+            return
+
+        timings = {'scenario_update_seconds': default_timer() - t1,
+                   'initialization_seconds': 0.0, 'optimizer_seconds': 0.0,
+                   'validation_seconds': 0.0, 'replanned': bool(self.replan)}
+        stage_started = default_timer()
         p_obj, alpha_ped, pedestrian_state = self.fit_dynamic_gp(
             self.pedestrians, self.max_pedestrians, self.p_ped, self.pedestrian_cost_primitive,
             self.pedestrian_noise_base, self.pedestrian_noise_growth)
+        timings['pedestrian_gp_seconds'] = default_timer() - stage_started
+        stage_started = default_timer()
         p_veh, alpha_veh, vehicle_state = self.fit_dynamic_gp(
             self.vehicles, self.max_vehicles, self.p_veh, self.vehicle_cost_primitive,
             self.vehicle_noise_base, self.vehicle_noise_growth)
+        timings['vehicle_gp_seconds'] = default_timer() - stage_started
+        stage_started = default_timer()
         self.dynamic_gp_state = {'pedestrian': pedestrian_state, 'vehicle': vehicle_state}
 
         c_ego = self.c_el
+        frame, reference = self.planning_frame()
+        self.planning_pose = (self.ego_state.x, self.ego_state.y, self.ego_state.yaw)
 
         self.p_numeric = np.concatenate([
             np.array([self.ego_state.vx]), # 0
@@ -675,14 +900,21 @@ class pcm_node(Node):
             p_veh.reshape(-1, order='F'),
             self.target_gp_points.reshape(-1, order='F'), self.target_gp_alpha,
             self.drivable_points.reshape(-1, order='F'), self.drivable_alpha,
-            self.reference_data,
+            reference,
             np.array([self.ego_state.vy, self.ego_state.yawrate, self.ego_state.pitch,
                       self.ego_state.ax, self.ego_state.steeringAngle, self.ego_state.x,
                       self.ego_state.y, self.ego_state.z, self.ego_state.yaw, *self.c_ez]),
+            frame if self.actuators_enabled else np.empty(0),
+            self.powertrain_state if self.actuators_enabled else np.empty(0),
+            np.array([pedestrian_state['error_bound'], vehicle_state['error_bound']])
+                if self.sparse_gp else np.empty(0),
             np.array([self.target_speed]),
         ]).flatten()
+        timings['parameter_pack_seconds'] = default_timer() - stage_started
+        stats = {}
 
         if self.replan:
+            stage_started = default_timer()
             # Variable Bounds (lbx, ubx)
             lbc = -np.inf * np.ones(self.M)
             ubc =  np.inf * np.ones(self.M)
@@ -699,18 +931,33 @@ class pcm_node(Node):
                 self.last_lam_x = np.zeros(self.M)
 
             try:
-                if self.prediction_model == 'dynamic_light':
+                if self.prediction_model == 'dynamic_light' or self.actuators_enabled or self.light_solver_enabled:
                     solver, initial, multipliers, initialization = self.light_initial_guess(t1)
                 else:
                     solver, initial, initialization = self.solver, self.last_c_opt, 'previous'
                     multipliers = {'lam_x0': self.last_lam_x, 'lam_g0': self.last_lam_g}
+                timings['initialization_seconds'] = default_timer() - stage_started
+                solve_started = default_timer()
                 sol = solver(x0=initial, lbx=lbc, ubx=ubc, lbg=lbg, ubg=ubg, p=self.p_numeric, **multipliers)
                 stats = solver.stats()
+                if self.uses_sqp and isinstance(solver, DenseSQPSolver):
+                    trial_constraints = sol['g'].full().flatten()
+                    if (not stats.get('success', False) or not np.isfinite(trial_constraints).all()
+                            or np.max(trial_constraints) > max(1e-6, self.solver_tolerance * 2.0)):
+                        trial = sol['x'].full().flatten()
+                        retry_initial = trial if np.isfinite(trial).all() else initial
+                        sol = self.actuator_retry_solver(x0=retry_initial, lbx=lbc, ubx=ubc,
+                            lbg=lbg, ubg=ubg, p=self.p_numeric)
+                        stats = self.actuator_retry_solver.stats()
+                        initialization += '_ipopt_retry'
+                timings['optimizer_seconds'] = default_timer() - solve_started
+                stage_started = default_timer()
                 candidate = sol['x'].full().flatten()
                 constraints = sol['g'].full().flatten()
                 valid = (stats.get('success', False) and candidate.shape == (self.M,) and np.isfinite(candidate).all()
                          and np.isfinite(constraints).all() and math.isfinite(float(sol['f']))
                          and np.max(constraints) <= max(1e-6, self.solver_tolerance * 2.0))
+                timings['validation_seconds'] = default_timer() - stage_started
                 self.plan_diagnostics = {'status': stats.get('return_status', ''), 'accepted': bool(valid),
                                          'prediction_model': self.prediction_model,
                                          'maximum_constraint': (float(np.max(constraints))
@@ -718,21 +965,35 @@ class pcm_node(Node):
                                          'ego_speed': float(self.ego_state.vx),
                                          'initialization': initialization,
                                          'iterations': int(stats.get('iter_count', -1)),
-                                         'solve_seconds': default_timer() - t1}
+                                         'solver_backend': ('ipopt_retry' if initialization.endswith('_ipopt_retry') else
+                                                            'slsqp' if self.uses_sqp else 'ipopt'),
+                                         'gp_compression': {name: state.get('compression', 'original_full_mean')
+                                                            for name, state in self.dynamic_gp_state.items()},
+                                         'solve_seconds': timings['optimizer_seconds']}
             except RuntimeError as error:
+                if 'solve_started' in locals():
+                    timings['optimizer_seconds'] = default_timer() - solve_started
+                else:
+                    timings['initialization_seconds'] = default_timer() - stage_started
                 self.plan_diagnostics = {'status': str(error), 'accepted': False,
                                          'prediction_model': self.prediction_model,
                                          'ego_speed': float(self.ego_state.vx)}
+                stage_started = default_timer()
                 self.reject_solver_solution(str(error))
+                timings['postprocess_seconds'] = default_timer() - stage_started
+                self.finish_cycle_timing(t1, timings, stats)
                 return
             if not valid:
+                stage_started = default_timer()
                 self.reject_solver_solution(stats.get('return_status', 'Invalid solver output'))
+                timings['postprocess_seconds'] = default_timer() - stage_started
+                self.finish_cycle_timing(t1, timings, stats)
                 return
             self.c_numeric = sol['x']
             self.last_c_opt = self.c_numeric.full().flatten()
             self.last_lam_x = sol['lam_x'].full()
             self.last_lam_g = sol['lam_g'].full()
-            if self.prediction_model == 'dynamic_light':
+            if self.prediction_model == 'dynamic_light' or self.actuators_enabled or self.light_solver_enabled:
                 self.light_previous = self.last_c_opt.copy()
                 self.light_previous_time = t1
                 self.light_multipliers = {'lam_x0': sol['lam_x'], 'lam_g0': sol['lam_g']}
@@ -745,8 +1006,14 @@ class pcm_node(Node):
             self.replan = False
             self.replan_timer += self.timer_period               
 
+        stage_started = default_timer()
         # Evaluate f_sup_vec (= g_cost) for the optimized solution
-        gp_evaluation = self.fsup_eval(self.c_numeric, self.p_numeric)
+        if self.actuators_enabled or self.light_solver_enabled:
+            reporting = self.reporting_eval(self.c_numeric, self.p_numeric)
+            prediction = reporting[:self.reporting_prediction_count]
+            gp_evaluation = reporting[self.reporting_prediction_count:]
+        else:
+            gp_evaluation = self.fsup_eval(self.c_numeric, self.p_numeric)
         f_sup_vec_numeric = gp_evaluation[0]
 
         # Convert CasADi DM -> NumPy array for printing
@@ -765,7 +1032,12 @@ class pcm_node(Node):
         self.get_logger().info(f"f_sup_vec: {f_sup_vec_numeric}")
         self.get_logger().info(f"replan_timer: {self.replan_timer:.2f}s, replan: {self.replan}")
 
-        prediction = self.rollout_eval(self.c_numeric, self.p_numeric)
+        if not (self.actuators_enabled or self.light_solver_enabled):
+            prediction = self.rollout_eval(self.c_numeric, self.p_numeric)
+        if self.actuators_enabled:
+            self.plan_diagnostics['energy'] = {'drawn_j': float(prediction[10]),
+                'recovered_j': float(prediction[11]), 'net_j': float(prediction[12]),
+                'weight': self.weight_energy, 'reference_j': self.energy_reference_j}
         velocityTarget = max(float(prediction[4]), 0.0)
 
         self.get_logger().info(
@@ -791,8 +1063,9 @@ class pcm_node(Node):
         z_final = prediction[0][:, 2].full().flatten()
         # The plan lives in base_link at the scenario stamp; move it into the current base_link.
         shift_yaw = 0.0
-        if self.scenario_pose is not None and self.ego_history:
-            x0, y0, yaw0 = self.scenario_pose
+        output_pose = self.planning_pose if self.actuators_enabled else self.scenario_pose
+        if output_pose is not None and self.ego_history:
+            x0, y0, yaw0 = output_pose
             _, x1, y1, yaw1 = self.ego_history[-1]
             map_x = x0 + math.cos(yaw0) * x_final - math.sin(yaw0) * y_final
             map_y = y0 + math.sin(yaw0) * x_final + math.cos(yaw0) * y_final
@@ -845,18 +1118,78 @@ class pcm_node(Node):
         
         t_end = default_timer()
         self.get_logger().info(f"Loop time: {t_end-t1:.4f}s")
+        timings['postprocess_seconds'] = default_timer() - stage_started
+        self.finish_cycle_timing(t1, timings, stats)
+
+    def planning_frame(self):
+        if not self.actuators_enabled or self.scenario_pose is None or not self.ego_history:
+            return np.zeros(4), self.reference_data
+        scene_x, scene_y, scene_yaw = self.scenario_pose
+        delta_x, delta_y = self.ego_state.x - scene_x, self.ego_state.y - scene_y
+        cosine, sine = math.cos(scene_yaw), math.sin(scene_yaw)
+        offset = np.array([cosine * delta_x + sine * delta_y,
+                           -sine * delta_x + cosine * delta_y])
+        yaw = self.ego_state.yaw - scene_yaw
+        age = max(0.0, (self.ego_history[-1][0] - self.scenario_stamp_ns) * 1e-9)
+        points = np.column_stack((self.lanes['ego_lane_x'], self.lanes['ego_lane_y'],
+                                  self.lanes['ego_lane_z'])).copy()
+        shifted = points[:, :2] - offset
+        cosine, sine = math.cos(yaw), math.sin(yaw)
+        points[:, 0] = cosine * shifted[:, 0] + sine * shifted[:, 1]
+        points[:, 1] = -sine * shifted[:, 0] + cosine * shifted[:, 1]
+        return np.r_[offset, yaw, age], prepare_progress_reference(points, self.reference_samples)
+
+    def finish_cycle_timing(self, started, timings, stats):
+        if not self.timing_enabled:
+            return
+        total = default_timer() - started
+        self.timing_history.append(total)
+        history = np.asarray(self.timing_history)
+        record = {**timings, 'total_seconds': total, 'deadline_seconds': self.timer_period,
+                  'deadline_missed': total > self.timer_period,
+                  'prediction_model': self.prediction_model,
+                  'gp_mode': 'sparse' if self.sparse_gp else 'full',
+                  'object_support_points': self.object_support_points if self.sparse_gp else self.N,
+                  'dynamic_support_counts': [self.pedestrian_support_count, self.vehicle_support_count],
+                  'gp_error_bounds': [self.dynamic_gp_state.get(name, {}).get('error_bound', 0.0)
+                                      for name in ('pedestrian', 'vehicle')],
+                  'accepted': getattr(self, 'plan_diagnostics', {}).get('accepted'),
+                  'solver_backend': getattr(self, 'plan_diagnostics', {}).get('solver_backend', 'unknown'),
+                  'gp_compression': {name: state.get('compression', 'original_full_mean')
+                                     for name, state in self.dynamic_gp_state.items()},
+                  'iterations': int(stats.get('iter_count', 0)),
+                  'oracle_seconds': {key: float(value) for key, value in stats.items()
+                                     if key.startswith('t_wall_nlp_')},
+                  'oracle_calls': {key: int(value) for key, value in stats.items()
+                                   if key.startswith('n_call_nlp_')},
+                  'window': {'count': len(history), 'mean_seconds': float(np.mean(history)),
+                             'p50_seconds': float(np.percentile(history, 50)),
+                             'p95_seconds': float(np.percentile(history, 95)),
+                             'p99_seconds': float(np.percentile(history, 99)),
+                             'max_seconds': float(np.max(history)),
+                             'deadline_misses': int(np.count_nonzero(history > self.timer_period))}}
+        self.cycle_timings = record
+        self.timing_pub.publish(String(data=json.dumps(record, allow_nan=False)))
 
     def light_initial_guess(self, now):
         # Initialization only: every published plan must still be an accepted IPOPT solution.
         guesses = []
         if self.light_previous is not None:
             delta = min(max(now - self.light_previous_time, 0.0), self.tau_h)
-            shifted = shift_velocity_coefficients(self.light_previous, delta, self.tau_h)
+            if self.prediction_model == 'kinematic':
+                scale = self.tau_h ** np.arange(1, 4)
+                shifted = shift_velocity_coefficients(self.light_previous * scale, delta, self.tau_h) / scale
+            else:
+                shifted = shift_velocity_coefficients(self.light_previous, delta, self.tau_h)
             violation = float(np.max(self.nlp_constraints(shifted, self.p_numeric).full()))
-            if violation <= self.light_warm_start_violation:
+            saturated_stop = (self.actuators_enabled and
+                              float(self.command_eval(shifted, self.p_numeric)) <= 1e-6)
+            if violation <= self.light_warm_start_violation and not saturated_stop:
                 return self.light_warm_solver, shifted, self.light_multipliers, 'shifted'
             guesses.append(shifted)
-        guesses += velocity_profile_coefficients(self.tau_h, max(float(self.ego_state.vx), 0.0), self.target_speed)
+        guesses += velocity_profile_coefficients(self.tau_h, max(float(self.ego_state.vx), 0.0), self.target_speed,
+            degree=3 if self.prediction_model == 'kinematic' else 4,
+            normalized=self.prediction_model != 'kinematic')
         scores = [(max(float(np.max(self.nlp_constraints(guess, self.p_numeric).full())), 0.0),
                    float(self.nlp_objective(guess, self.p_numeric))) for guess in guesses]
         return self.solver, guesses[min(range(len(guesses)), key=scores.__getitem__)], {}, 'profile'
@@ -888,7 +1221,8 @@ class pcm_node(Node):
             points = self.p_numeric[offset:offset + 3 * count].reshape((count, 3), order='F')
             offset += 3 * count
             layers[name] = {'points': points.tolist(), 'alpha': alpha.tolist(),
-                            'kernel': kernel, 'offset': -1.0}
+                            'kernel': kernel,
+                            'offset': -1.0 + self.dynamic_gp_state.get(name, {}).get('error_bound', 0.0)}
             layers[name].update(self.dynamic_gp_state.get(name, {}))
         for name, points, alpha, kernel in (
             ('ego_lane', lane_state[0], lane_state[2], self.p_el),

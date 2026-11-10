@@ -85,16 +85,16 @@ def velocity_polynomial(elapsed, coefficients, initial_speed, horizon=1.0):
 def shift_velocity_coefficients(coefficients, delta, horizon):
     # Exact re-expansion of v(t + delta) - v(delta); the new measured speed supplies the constant term.
     shift = delta / horizon
-    shifted = np.zeros(5)
+    shifted = np.zeros(len(coefficients) + 1)
     for power, value in enumerate(np.r_[0.0, np.asarray(coefficients, dtype=float).flatten()]):
         for order in range(power + 1):
             shifted[order] += value * math.comb(power, order) * shift**(power - order)
     return shifted[1:]
 
 
-def velocity_profile_coefficients(horizon, initial_speed, target_speed, samples=80):
+def velocity_profile_coefficients(horizon, initial_speed, target_speed, samples=80, degree=4, normalized=True):
     times = np.linspace(horizon / samples, horizon, samples)
-    basis = np.column_stack([(times / horizon)**(power + 1) for power in range(4)])
+    basis = np.column_stack([((times / horizon) if normalized else times)**(power + 1) for power in range(degree)])
     profiles = [np.full(samples, initial_speed)]
     profiles += [np.maximum(0.0, initial_speed - rate * times) for rate in (0.5, 1.0, 2.0, 3.0, 4.0, 5.0)]
     ceiling = max(target_speed, initial_speed)
@@ -156,7 +156,9 @@ def build_dynamic_light_rollout(horizon, prediction_steps, control_step, command
 
 
 def build_dynamic_rollout(horizon, prediction_steps, control_step, command_time,
-                          settings=VehicleConfig(), use_road_gradient=True, road_pitch=0.0, reference_points=96):
+                          settings=VehicleConfig(), use_road_gradient=True, road_pitch=0.0, reference_points=96,
+                          powertrain=None, efficiency=None, actuator_vehicle_model='dynamic',
+                          actuator_method='detailed', actuator_stage_step=0.005):
     coefficients = ca.MX.sym('acceleration_coefficients', 4)
     initial = ca.MX.sym('initial_state', 7)
     initial_ax = ca.MX.sym('initial_acceleration')
@@ -165,6 +167,7 @@ def build_dynamic_rollout(horizon, prediction_steps, control_step, command_time,
     lane_z = ca.MX.sym('lane_z', 4)
     initial_pitch = ca.MX.sym('initial_pitch')
     reference = ca.MX.sym('progress_reference_data', 2 + 6 * reference_points)
+    actuator_initial = ca.MX.sym('actuator_initial', 4) if powertrain is not None else None
     lookup = progress_reference_function(reference_points)
     cosine_yaw, sine_yaw = ca.cos(initial[3]), ca.sin(initial[3])
     cosine_pitch, sine_pitch = ca.cos(initial_pitch), ca.sin(initial_pitch)
@@ -212,8 +215,12 @@ def build_dynamic_rollout(horizon, prediction_steps, control_step, command_time,
     initial_rotation = quaternion(initial[3], initial_pitch)
 
     initial_road, _ = road_and_steering(initial, 0.0)
-    initial_request = acceleration_command(settings)(initial, initial_ax, initial_steering, initial_road[1])
-    polynomial = ca.vertcat(initial_request + coefficients[0], coefficients[1:4])
+    if powertrain is None:
+        initial_request = acceleration_command(settings)(initial, initial_ax, initial_steering, initial_road[1])
+        polynomial = ca.vertcat(initial_request + coefficients[0], coefficients[1:4])
+    else:
+        from plan_predictive_cost_map.pcm_powertrain import build_actuator_interval
+        joint = ca.vertcat(initial, actuator_initial, ca.MX.zeros(4, 1))
     prediction_times = np.round(np.linspace(horizon / prediction_steps, horizon, prediction_steps), 12)
     boundaries = np.unique(np.round(np.concatenate((np.arange(0.0, horizon, control_step),
                                                     prediction_times, [0.0, command_time, horizon])), 12))
@@ -222,24 +229,34 @@ def build_dynamic_rollout(horizon, prediction_steps, control_step, command_time,
     orientations, states = [], []
     progress = ca.MX(0.0)
     progress_samples = []
+    actuator_samples, command_samples = [], []
     steps = {}
     command_speed = initial[4]
     for previous_time, elapsed in zip(boundaries[:-1], boundaries[1:]):
         duration = round(float(elapsed - previous_time), 12)
         if duration not in steps:
-            steps[duration] = acceleration_polynomial_step(duration, settings, clip_acceleration=False)
+            steps[duration] = (acceleration_polynomial_step(duration, settings, clip_acceleration=False)
+                if powertrain is None else build_actuator_interval(duration, horizon, command_time,
+                    efficiency, powertrain, settings, actuator_vehicle_model, actuator_method, actuator_stage_step))
         road, steering = road_and_steering(state, progress)
         previous_speed = state[4]
-        state, acceleration, requested = steps[duration](state, polynomial, previous_time, steering, road)
-        progress += 0.5 * (previous_speed + state[4]) * duration
+        if powertrain is None:
+            state, acceleration, requested = steps[duration](state, polynomial, previous_time, steering, road)
+            progress += 0.5 * (previous_speed + state[4]) * duration
+        else:
+            joint, acceleration, requested = steps[duration](joint, coefficients, initial[4], road, steering)
+            state, progress = joint[:7], joint[13]
+            command_samples.append(velocity_polynomial(min(previous_time + command_time, horizon),
+                                                       coefficients, initial[4], horizon)[0])
         input_samples.append(requested)
         if elapsed == round(command_time, 12):
-            command_speed = state[4]
+            command_speed = (state[4] if powertrain is None else
+                velocity_polynomial(command_time, coefficients, initial[4], horizon)[0])
         if elapsed in prediction_times:
             positions.append(local_position(state).T)
             speeds.append(state[4])
             accelerations.append(acceleration.T)
-            requests.append(polynomial_acceleration(elapsed, polynomial))
+            requests.append(polynomial_acceleration(elapsed, polynomial) if powertrain is None else requested)
             steering_samples.append(steering)
             physical_pitch = road_and_steering(state, progress)[0][0]
             rotation = quaternion(state[3], physical_pitch)
@@ -249,12 +266,22 @@ def build_dynamic_rollout(horizon, prediction_steps, control_step, command_time,
             orientations.append(ca.vertcat(relative_vector, relative_scalar).T)
             states.append(state.T)
             progress_samples.append(progress)
+            if powertrain is not None:
+                actuator_samples.append(joint[7:13].T)
     positions = ca.vertcat(*positions)
     reference_height = ca.vertcat(*[lookup(value, reference)[2] for value in progress_samples])
     positions = ca.horzcat(positions[:, :2], reference_height)
-    return ca.Function('longitudinal_dynamic_rollout',
-                       [coefficients, initial, initial_ax, initial_steering, lane_y, lane_z, initial_pitch, reference],
-                       [positions, ca.vertcat(*speeds), ca.vertcat(*accelerations),
-                        ca.vertcat(*requests), command_speed, ca.vertcat(*steering_samples),
-                        ca.vertcat(*input_samples, polynomial_acceleration(horizon, polynomial)),
-                        ca.vertcat(*orientations), ca.vertcat(*states), ca.vertcat(*progress_samples)])
+    inputs = [coefficients, initial, initial_ax, initial_steering, lane_y, lane_z, initial_pitch, reference]
+    outputs = [positions, ca.vertcat(*speeds), ca.vertcat(*accelerations),
+               ca.vertcat(*requests), command_speed, ca.vertcat(*steering_samples),
+               ca.vertcat(*input_samples, polynomial_acceleration(horizon, polynomial))
+                    if powertrain is None else ca.vertcat(*input_samples, requested),
+               ca.vertcat(*orientations), ca.vertcat(*states), ca.vertcat(*progress_samples)]
+    if powertrain is not None:
+        if command_time == 0.0:
+            outputs[4] = initial[4]
+        inputs.append(actuator_initial)
+        outputs.extend([joint[11], joint[12], joint[11] - joint[12], ca.vertcat(*actuator_samples),
+                        ca.vertcat(*command_samples, velocity_polynomial(horizon, coefficients, initial[4], horizon)[0])])
+    return ca.Function('longitudinal_dynamic_rollout' if powertrain is None else 'longitudinal_dynamic_actuators_rollout',
+                       inputs, outputs)

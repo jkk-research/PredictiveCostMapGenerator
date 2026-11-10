@@ -1,0 +1,858 @@
+{
+  "method": "Fixed measured states; full GP; current launch physical/objective settings; one cold and repeated warm solves. JIT compilation is reported separately. Detailed-model replay checks are outside timings; no closed-loop or live deadline guarantee.",
+  "results": [
+    {
+      "variant": "discrete",
+      "build_seconds": 171.9542749409993,
+      "horizon": 4.0,
+      "prediction_steps": 10,
+      "stage_step": 0.01,
+      "cases": {
+        "rest": {
+          "cold": {
+            "scenario_update_seconds": 4.716001058113761e-06,
+            "initialization_seconds": 0.01900261400078307,
+            "optimizer_seconds": 0.13316582400148036,
+            "validation_seconds": 0.0005092749997857027,
+            "replanned": true,
+            "pedestrian_gp_seconds": 0.00047536500096612144,
+            "vehicle_gp_seconds": 0.0001830870005505858,
+            "parameter_pack_seconds": 4.01680008508265e-05,
+            "postprocess_seconds": 0.013829146999341901,
+            "total_seconds": 0.16737016899969603,
+            "deadline_seconds": 0.05,
+            "deadline_missed": true,
+            "prediction_model": "dynamic_actuators",
+            "gp_mode": "full",
+            "object_support_points": 10,
+            "dynamic_support_counts": [
+              40,
+              40
+            ],
+            "gp_error_bounds": [
+              0.0,
+              0.0
+            ],
+            "accepted": true,
+            "iterations": 6,
+            "oracle_seconds": {
+              "t_wall_nlp_f": 0.0037951170000000006,
+              "t_wall_nlp_g": 0.00379943,
+              "t_wall_nlp_grad": 0.0,
+              "t_wall_nlp_grad_f": 0.020243576000000003,
+              "t_wall_nlp_jac_g": 0.039219686000000004
+            },
+            "oracle_calls": {
+              "n_call_nlp_f": 7,
+              "n_call_nlp_g": 7,
+              "n_call_nlp_grad": 0,
+              "n_call_nlp_grad_f": 8,
+              "n_call_nlp_jac_g": 8
+            },
+            "window": {
+              "count": 1,
+              "mean_seconds": 0.16737016899969603,
+              "p50_seconds": 0.16737016899969603,
+              "p95_seconds": 0.16737016899969603,
+              "p99_seconds": 0.16737016899969603,
+              "max_seconds": 0.16737016899969603,
+              "deadline_misses": 1
+            }
+          },
+          "cold_detailed_check": {
+            "max_position_error_m": 0.007977628338048603,
+            "max_speed_error_mps": 0.013829681810256567,
+            "predicted_net_j": 43994.54945848889,
+            "detailed_net_j": 43955.838873739835,
+            "net_error_j": 38.71058474905294,
+            "drawn_error_j": 55.68539735128434,
+            "recovered_error_j": 16.974812602231395,
+            "detailed_maximum_constraint": -0.6731621442241078,
+            "detailed_feasible": true
+          },
+          "warm": {
+            "total_seconds": {
+              "mean": 0.08856687670013344,
+              "p50": 0.08484915799999726,
+              "p95": 0.11341195355007584,
+              "max": 0.11411752700041689
+            },
+            "optimizer_seconds": {
+              "mean": 0.07536886800007778,
+              "p50": 0.07306496150067687,
+              "p95": 0.09367198615027518,
+              "max": 0.09546108399990771
+            },
+            "initialization_seconds": {
+              "mean": 0.0013872720999643206,
+              "p50": 0.0012652264995267615,
+              "p95": 0.0023308774503675513,
+              "max": 0.002741195999988122
+            },
+            "postprocess_seconds": {
+              "mean": 0.010542151499794272,
+              "p50": 0.008883697999408469,
+              "p95": 0.017452554250212412,
+              "max": 0.018711292001171387
+            }
+          },
+          "warm_accepted": 10,
+          "warm_deadline_misses": 10,
+          "warm_cycles": 10,
+          "warm_iterations": {
+            "mean": 2.7,
+            "p50": 3.0,
+            "p95": 3.0,
+            "max": 3.0
+          },
+          "warm_detailed_checks": [
+            {
+              "max_position_error_m": 0.0074746520451753895,
+              "max_speed_error_mps": 0.013813033427562793,
+              "predicted_net_j": 44556.99301556022,
+              "detailed_net_j": 44518.760659277395,
+              "net_error_j": 38.232356282824185,
+              "drawn_error_j": 55.89085212851933,
+              "recovered_error_j": 17.658495845687867,
+              "detailed_maximum_constraint": -0.6285704476949814,
+              "detailed_feasible": true
+            },
+            {
+              "max_position_error_m": 0.007433865114979454,
+              "max_speed_error_mps": 0.013787262222951568,
+              "predicted_net_j": 44379.264969931566,
+              "detailed_net_j": 44342.32807861806,
+              "net_error_j": 36.93689131350402,
+              "drawn_error_j": 55.80640217122709,
+              "recovered_error_j": 18.869510857719433,
+              "detailed_maximum_constraint": -0.6438068508906092,
+              "detailed_feasible": true
+            },
+            {
+              "max_position_error_m": 0.007254943329780161,
+              "max_speed_error_mps": 0.013697534079684992,
+              "predicted_net_j": 44523.67595678122,
+              "detailed_net_j": 44487.486245959226,
+              "net_error_j": 36.189710821992776,
+              "drawn_error_j": 56.078235952561954,
+              "recovered_error_j": 19.888525130570997,
+              "detailed_maximum_constraint": -0.6341537351946673,
+              "detailed_feasible": true
+            },
+            {
+              "max_position_error_m": 0.007222949093982578,
+              "max_speed_error_mps": 0.013676538289336904,
+              "predicted_net_j": 44247.81098358512,
+              "detailed_net_j": 44211.037783735555,
+              "net_error_j": 36.77319984956557,
+              "drawn_error_j": 56.05228002060903,
+              "recovered_error_j": 19.279080171039823,
+              "detailed_maximum_constraint": -0.653765259069556,
+              "detailed_feasible": true
+            },
+            {
+              "max_position_error_m": 0.0066382781846279215,
+              "max_speed_error_mps": 0.013816061025906379,
+              "predicted_net_j": 44400.484759699095,
+              "detailed_net_j": 44362.151678658636,
+              "net_error_j": 38.33308104045864,
+              "drawn_error_j": 55.806762176871416,
+              "recovered_error_j": 17.47368113640914,
+              "detailed_maximum_constraint": -0.6317810387621972,
+              "detailed_feasible": true
+            },
+            {
+              "max_position_error_m": 0.006573672020355303,
+              "max_speed_error_mps": 0.01373062457976637,
+              "predicted_net_j": 44447.884946010054,
+              "detailed_net_j": 44410.045477170235,
+              "net_error_j": 37.83946883981844,
+              "drawn_error_j": 56.235518768182374,
+              "recovered_error_j": 18.396049928365755,
+              "detailed_maximum_constraint": -0.6302189321679297,
+              "detailed_feasible": true
+            },
+            {
+              "max_position_error_m": 0.006543502291787462,
+              "max_speed_error_mps": 0.013567802522431727,
+              "predicted_net_j": 44272.58102713566,
+              "detailed_net_j": 44236.08135247288,
+              "net_error_j": 36.49967466278031,
+              "drawn_error_j": 55.58936382756656,
+              "recovered_error_j": 19.08968916478625,
+              "detailed_maximum_constraint": -0.6486647866642334,
+              "detailed_feasible": true
+            },
+            {
+              "max_position_error_m": 0.0063823029256351305,
+              "max_speed_error_mps": 0.013688340020174827,
+              "predicted_net_j": 44039.64652034057,
+              "detailed_net_j": 43999.55760016868,
+              "net_error_j": 40.088920171889185,
+              "drawn_error_j": 56.84478396755003,
+              "recovered_error_j": 16.75586379566448,
+              "detailed_maximum_constraint": -0.658841729368798,
+              "detailed_feasible": true
+            },
+            {
+              "max_position_error_m": 0.00655696485394941,
+              "max_speed_error_mps": 0.013200781349785196,
+              "predicted_net_j": 44535.54207109395,
+              "detailed_net_j": 44504.907903252766,
+              "net_error_j": 30.634167841184535,
+              "drawn_error_j": 54.51613395308959,
+              "recovered_error_j": 23.881966111908696,
+              "detailed_maximum_constraint": -0.6472649555661132,
+              "detailed_feasible": true
+            },
+            {
+              "max_position_error_m": 0.006434130277519046,
+              "max_speed_error_mps": 0.013220959609976823,
+              "predicted_net_j": 44254.013116441245,
+              "detailed_net_j": 44221.5016202275,
+              "net_error_j": 32.51149621374498,
+              "drawn_error_j": 55.671301749142,
+              "recovered_error_j": 23.15980553538975,
+              "detailed_maximum_constraint": -0.6645567724654269,
+              "detailed_feasible": true
+            }
+          ],
+          "last_status": "Solve_Succeeded"
+        },
+        "moving": {
+          "cold": {
+            "scenario_update_seconds": 5.955000233370811e-06,
+            "initialization_seconds": 0.021529839001232176,
+            "optimizer_seconds": 0.15152770200074883,
+            "validation_seconds": 0.0004549929999484448,
+            "replanned": true,
+            "pedestrian_gp_seconds": 0.0003949780002585612,
+            "vehicle_gp_seconds": 0.0002725470003497321,
+            "parameter_pack_seconds": 9.730499914439861e-05,
+            "postprocess_seconds": 0.0069225359984557144,
+            "total_seconds": 0.18131093800002418,
+            "deadline_seconds": 0.05,
+            "deadline_missed": true,
+            "prediction_model": "dynamic_actuators",
+            "gp_mode": "full",
+            "object_support_points": 10,
+            "dynamic_support_counts": [
+              40,
+              40
+            ],
+            "gp_error_bounds": [
+              0.0,
+              0.0
+            ],
+            "accepted": true,
+            "iterations": 7,
+            "oracle_seconds": {
+              "t_wall_nlp_f": 0.004691351,
+              "t_wall_nlp_g": 0.005086554,
+              "t_wall_nlp_grad": 0.0,
+              "t_wall_nlp_grad_f": 0.021624333,
+              "t_wall_nlp_jac_g": 0.044025865
+            },
+            "oracle_calls": {
+              "n_call_nlp_f": 8,
+              "n_call_nlp_g": 8,
+              "n_call_nlp_grad": 0,
+              "n_call_nlp_grad_f": 9,
+              "n_call_nlp_jac_g": 9
+            },
+            "window": {
+              "count": 12,
+              "mean_seconds": 0.10286248950008788,
+              "p50_seconds": 0.09239717650052626,
+              "p95_seconds": 0.17364351504984368,
+              "p99_seconds": 0.1797774534099881,
+              "max_seconds": 0.18131093800002418,
+              "deadline_misses": 12
+            }
+          },
+          "cold_detailed_check": {
+            "max_position_error_m": 0.011176942840695148,
+            "max_speed_error_mps": 0.008757723259129158,
+            "predicted_net_j": -13264.899952044316,
+            "detailed_net_j": -13243.90198050615,
+            "net_error_j": -20.997971538165075,
+            "drawn_error_j": 0.3338447479543447,
+            "recovered_error_j": 21.331816286119647,
+            "detailed_maximum_constraint": -0.07350323702511563,
+            "detailed_feasible": true
+          },
+          "warm": {
+            "total_seconds": {
+              "mean": 0.05051892859992222,
+              "p50": 0.04779723249976087,
+              "p95": 0.07148358940039541,
+              "max": 0.07703796100031468
+            },
+            "optimizer_seconds": {
+              "mean": 0.04148411479945935,
+              "p50": 0.037701740498960135,
+              "p95": 0.06303411844946821,
+              "max": 0.06736949900005129
+            },
+            "initialization_seconds": {
+              "mean": 0.0008709941996130511,
+              "p50": 0.0007917759994597873,
+              "p95": 0.0012451201994736038,
+              "max": 0.0012988519993086811
+            },
+            "postprocess_seconds": {
+              "mean": 0.007156764900355483,
+              "p50": 0.006447522499911429,
+              "p95": 0.010478576600962696,
+              "max": 0.011052584000935894
+            }
+          },
+          "warm_accepted": 10,
+          "warm_deadline_misses": 4,
+          "warm_cycles": 10,
+          "warm_iterations": {
+            "mean": 1.8,
+            "p50": 1.5,
+            "p95": 3.549999999999999,
+            "max": 4.0
+          },
+          "warm_detailed_checks": [
+            {
+              "max_position_error_m": 0.011672743944433961,
+              "max_speed_error_mps": 0.009188663413123521,
+              "predicted_net_j": -14015.098976196203,
+              "detailed_net_j": -13994.650576869202,
+              "net_error_j": -20.448399327000516,
+              "drawn_error_j": -0.044007425345171214,
+              "recovered_error_j": 20.40439190165489,
+              "detailed_maximum_constraint": -0.07159851779606896,
+              "detailed_feasible": true
+            },
+            {
+              "max_position_error_m": 0.01218415903890957,
+              "max_speed_error_mps": 0.00963030112604013,
+              "predicted_net_j": -14760.88305840804,
+              "detailed_net_j": -14741.559017716489,
+              "net_error_j": -19.324040691552,
+              "drawn_error_j": -0.1605800160466515,
+              "recovered_error_j": 19.16346067550512,
+              "detailed_maximum_constraint": -0.06974414624099268,
+              "detailed_feasible": true
+            },
+            {
+              "max_position_error_m": 0.010973709330890813,
+              "max_speed_error_mps": 0.00900083124738238,
+              "predicted_net_j": -12548.611785710687,
+              "detailed_net_j": -12526.538679104933,
+              "net_error_j": -22.07310660575422,
+              "drawn_error_j": -1.741225019074136,
+              "recovered_error_j": 20.331881586680538,
+              "detailed_maximum_constraint": -0.0527882876249155,
+              "detailed_feasible": true
+            },
+            {
+              "max_position_error_m": 0.011496428493327215,
+              "max_speed_error_mps": 0.009453360544270595,
+              "predicted_net_j": -13368.876801436489,
+              "detailed_net_j": -13346.986278204833,
+              "net_error_j": -21.890523231655607,
+              "drawn_error_j": -2.508460497442229,
+              "recovered_error_j": 19.382062734213832,
+              "detailed_maximum_constraint": -0.05103090310100811,
+              "detailed_feasible": true
+            },
+            {
+              "max_position_error_m": 0.012031457821183977,
+              "max_speed_error_mps": 0.009916518448139122,
+              "predicted_net_j": -14180.934560046899,
+              "detailed_net_j": -14159.508971545,
+              "net_error_j": -21.425588501899256,
+              "drawn_error_j": -3.3290122221389993,
+              "recovered_error_j": 18.096576279760484,
+              "detailed_maximum_constraint": -0.049340048306387274,
+              "detailed_feasible": true
+            },
+            {
+              "max_position_error_m": 0.011430189719312978,
+              "max_speed_error_mps": 0.00957452261266667,
+              "predicted_net_j": -13059.583499249098,
+              "detailed_net_j": -13036.025571855916,
+              "net_error_j": -23.55792739318167,
+              "drawn_error_j": -5.1082925308487575,
+              "recovered_error_j": 18.44963486233428,
+              "detailed_maximum_constraint": -0.040193508943558776,
+              "detailed_feasible": true
+            },
+            {
+              "max_position_error_m": 0.011985373731725701,
+              "max_speed_error_mps": 0.010045704214680207,
+              "predicted_net_j": -13903.49505635713,
+              "detailed_net_j": -13881.069588123148,
+              "net_error_j": -22.42546823398152,
+              "drawn_error_j": -5.2767866824910925,
+              "recovered_error_j": 17.14868155149088,
+              "detailed_maximum_constraint": -0.03863216325543384,
+              "detailed_feasible": true
+            },
+            {
+              "max_position_error_m": 0.011520646442527038,
+              "max_speed_error_mps": 0.009767359573962686,
+              "predicted_net_j": -13054.432180949112,
+              "detailed_net_j": -13030.359289739485,
+              "net_error_j": -24.072891209627414,
+              "drawn_error_j": -6.738462464355507,
+              "recovered_error_j": 17.334428745272817,
+              "detailed_maximum_constraint": -0.03248430870695174,
+              "detailed_feasible": true
+            },
+            {
+              "max_position_error_m": 0.010016845803836105,
+              "max_speed_error_mps": 0.00851186974533924,
+              "predicted_net_j": -10519.971130590928,
+              "detailed_net_j": -10493.430220180704,
+              "net_error_j": -26.54091041022366,
+              "drawn_error_j": -7.531000969484467,
+              "recovered_error_j": 19.009909440739648,
+              "detailed_maximum_constraint": -0.027355217539327015,
+              "detailed_feasible": true
+            },
+            {
+              "max_position_error_m": 0.010752590403676265,
+              "max_speed_error_mps": 0.007288078659565045,
+              "predicted_net_j": -13033.57420758158,
+              "detailed_net_j": -13013.052837239988,
+              "net_error_j": -20.521370341592046,
+              "drawn_error_j": -0.28757367386923605,
+              "recovered_error_j": 20.233796667722345,
+              "detailed_maximum_constraint": -0.11981805898749442,
+              "detailed_feasible": true
+            }
+          ],
+          "last_status": "Solve_Succeeded"
+        },
+        "crossing": {
+          "cold": {
+            "scenario_update_seconds": 2.687000232981518e-06,
+            "initialization_seconds": 0.01745423299871618,
+            "optimizer_seconds": 0.2431041660001938,
+            "validation_seconds": 0.00024083300013444386,
+            "replanned": true,
+            "pedestrian_gp_seconds": 0.0003358729991305154,
+            "vehicle_gp_seconds": 0.00023903699911898002,
+            "parameter_pack_seconds": 2.803999996103812e-05,
+            "postprocess_seconds": 0.006088677999287029,
+            "total_seconds": 0.2675802110006771,
+            "deadline_seconds": 0.05,
+            "deadline_missed": true,
+            "prediction_model": "dynamic_actuators",
+            "gp_mode": "full",
+            "object_support_points": 10,
+            "dynamic_support_counts": [
+              40,
+              40
+            ],
+            "gp_error_bounds": [
+              0.0,
+              0.0
+            ],
+            "accepted": true,
+            "iterations": 15,
+            "oracle_seconds": {
+              "t_wall_nlp_f": 0.008987839000000001,
+              "t_wall_nlp_g": 0.009506966,
+              "t_wall_nlp_grad": 0.0,
+              "t_wall_nlp_grad_f": 0.035956629999999996,
+              "t_wall_nlp_jac_g": 0.071044057
+            },
+            "oracle_calls": {
+              "n_call_nlp_f": 20,
+              "n_call_nlp_g": 20,
+              "n_call_nlp_grad": 0,
+              "n_call_nlp_grad_f": 17,
+              "n_call_nlp_jac_g": 17
+            },
+            "window": {
+              "count": 23,
+              "mean_seconds": 0.08726605960873712,
+              "p50_seconds": 0.07401621700046235,
+              "p95_seconds": 0.17991686109999133,
+              "p99_seconds": 0.24860097094053354,
+              "max_seconds": 0.2675802110006771,
+              "deadline_misses": 17
+            }
+          },
+          "cold_detailed_check": {
+            "max_position_error_m": 0.03223142992432848,
+            "max_speed_error_mps": 0.024478870709790712,
+            "predicted_net_j": -8744.726566963336,
+            "detailed_net_j": -8894.313510486376,
+            "net_error_j": 149.58694352303974,
+            "drawn_error_j": 36.29948960268848,
+            "recovered_error_j": -113.28745392035125,
+            "detailed_maximum_constraint": -8.207295552509208e-05,
+            "detailed_feasible": true
+          },
+          "warm": {
+            "total_seconds": {
+              "mean": 0.14300021410035696,
+              "p50": 0.11800389450036164,
+              "p95": 0.2149100371012537,
+              "max": 0.21517292800126597
+            },
+            "optimizer_seconds": {
+              "mean": 0.13199773900014405,
+              "p50": 0.10663427950021287,
+              "p95": 0.2022172234995196,
+              "max": 0.20355625699994562
+            },
+            "initialization_seconds": {
+              "mean": 0.0012435353002729244,
+              "p50": 0.0012975990002814797,
+              "p95": 0.0018140100998607514,
+              "max": 0.0021861069999431493
+            },
+            "postprocess_seconds": {
+              "mean": 0.008007131499653042,
+              "p50": 0.008026092999898538,
+              "p95": 0.010619092949855255,
+              "max": 0.011819166000350378
+            }
+          },
+          "warm_accepted": 10,
+          "warm_deadline_misses": 10,
+          "warm_cycles": 10,
+          "warm_iterations": {
+            "mean": 6.2,
+            "p50": 5.0,
+            "p95": 9.0,
+            "max": 9.0
+          },
+          "warm_detailed_checks": [
+            {
+              "max_position_error_m": 0.0314628095458076,
+              "max_speed_error_mps": 0.024733457411260318,
+              "predicted_net_j": -10873.865149570518,
+              "detailed_net_j": -11021.724437567253,
+              "net_error_j": 147.85928799673457,
+              "drawn_error_j": 31.44176036605586,
+              "recovered_error_j": -116.4175276306778,
+              "detailed_maximum_constraint": 0.0009944958105734258,
+              "detailed_feasible": true
+            },
+            {
+              "max_position_error_m": 0.031966616616355026,
+              "max_speed_error_mps": 0.02470782312235187,
+              "predicted_net_j": -9210.725989595354,
+              "detailed_net_j": -9357.056353401476,
+              "net_error_j": 146.33036380612248,
+              "drawn_error_j": 33.66231849689757,
+              "recovered_error_j": -112.66804530922309,
+              "detailed_maximum_constraint": 0.0009240599561266549,
+              "detailed_feasible": true
+            },
+            {
+              "max_position_error_m": 0.03129306719767122,
+              "max_speed_error_mps": 0.02494597104108376,
+              "predicted_net_j": -11194.01170356742,
+              "detailed_net_j": -11340.21214133003,
+              "net_error_j": 146.20043776261082,
+              "drawn_error_j": 29.82245484215764,
+              "recovered_error_j": -116.37798292045409,
+              "detailed_maximum_constraint": 0.0019084296881821672,
+              "detailed_feasible": true
+            },
+            {
+              "max_position_error_m": 0.03185663171259989,
+              "max_speed_error_mps": 0.024892121539463297,
+              "predicted_net_j": -9193.687752906106,
+              "detailed_net_j": -9336.713734797639,
+              "net_error_j": 143.02598189153287,
+              "drawn_error_j": 30.748450257159675,
+              "recovered_error_j": -112.27753163437228,
+              "detailed_maximum_constraint": 0.001723154452211162,
+              "detailed_feasible": true
+            },
+            {
+              "max_position_error_m": 0.031249576877314666,
+              "max_speed_error_mps": 0.025113708867902318,
+              "predicted_net_j": -11109.778068891208,
+              "detailed_net_j": -11255.426337274654,
+              "net_error_j": 145.6482683834456,
+              "drawn_error_j": 29.76542599606728,
+              "recovered_error_j": -115.88284238737833,
+              "detailed_maximum_constraint": 0.0026379842792856323,
+              "detailed_feasible": false
+            },
+            {
+              "max_position_error_m": 0.031750844707470804,
+              "max_speed_error_mps": 0.025072883336100915,
+              "predicted_net_j": -9283.37175936272,
+              "detailed_net_j": -9426.917371677222,
+              "net_error_j": 143.54561231450134,
+              "drawn_error_j": 30.816062584126485,
+              "recovered_error_j": -112.72954973037486,
+              "detailed_maximum_constraint": 0.002504791784456728,
+              "detailed_feasible": false
+            },
+            {
+              "max_position_error_m": 0.031153936444065167,
+              "max_speed_error_mps": 0.025279843380391576,
+              "predicted_net_j": -11126.999099414303,
+              "detailed_net_j": -11268.323966086806,
+              "net_error_j": 141.32486667250305,
+              "drawn_error_j": 27.042583548595758,
+              "recovered_error_j": -114.28228312390638,
+              "detailed_maximum_constraint": 0.003360418204998439,
+              "detailed_feasible": false
+            },
+            {
+              "max_position_error_m": 0.030595428622637755,
+              "max_speed_error_mps": 0.02547966141496083,
+              "predicted_net_j": -12608.856504869567,
+              "detailed_net_j": -12751.56213586505,
+              "net_error_j": 142.70563099548235,
+              "drawn_error_j": 25.60727998153925,
+              "recovered_error_j": -117.09835101394492,
+              "detailed_maximum_constraint": 0.004186997941886261,
+              "detailed_feasible": false
+            },
+            {
+              "max_position_error_m": 0.0315604748285061,
+              "max_speed_error_mps": 0.025327938923501492,
+              "predicted_net_j": -9511.509283518284,
+              "detailed_net_j": -9651.906733862881,
+              "net_error_j": 140.39745034459702,
+              "drawn_error_j": 28.763464441655742,
+              "recovered_error_j": -111.6339859029431,
+              "detailed_maximum_constraint": 0.0036051095986877613,
+              "detailed_feasible": false
+            },
+            {
+              "max_position_error_m": 0.031013117050919803,
+              "max_speed_error_mps": 0.0255149551447591,
+              "predicted_net_j": -11207.70727114455,
+              "detailed_net_j": -11348.559127868662,
+              "net_error_j": 140.8518567241117,
+              "drawn_error_j": 26.717765846412476,
+              "recovered_error_j": -114.13409087769833,
+              "detailed_maximum_constraint": 0.0043779921995756865,
+              "detailed_feasible": false
+            }
+          ],
+          "last_status": "Solve_Succeeded"
+        },
+        "capacity": {
+          "cold": {
+            "scenario_update_seconds": 6.330999894998968e-06,
+            "initialization_seconds": 0.023386319999190164,
+            "optimizer_seconds": 0.3335301699989941,
+            "validation_seconds": 0.0007126489999791374,
+            "replanned": true,
+            "pedestrian_gp_seconds": 0.0007558500001323409,
+            "vehicle_gp_seconds": 0.0006066309997549979,
+            "parameter_pack_seconds": 4.844499926548451e-05,
+            "postprocess_seconds": 0.00847436000003654,
+            "total_seconds": 0.3677829349999229,
+            "deadline_seconds": 0.05,
+            "deadline_missed": true,
+            "prediction_model": "dynamic_actuators",
+            "gp_mode": "full",
+            "object_support_points": 10,
+            "dynamic_support_counts": [
+              40,
+              40
+            ],
+            "gp_error_bounds": [
+              0.0,
+              0.0
+            ],
+            "accepted": true,
+            "iterations": 15,
+            "oracle_seconds": {
+              "t_wall_nlp_f": 0.015091698,
+              "t_wall_nlp_g": 0.012795842999999998,
+              "t_wall_nlp_grad": 0.0,
+              "t_wall_nlp_grad_f": 0.053771815999999986,
+              "t_wall_nlp_jac_g": 0.08009798
+            },
+            "oracle_calls": {
+              "n_call_nlp_f": 20,
+              "n_call_nlp_g": 20,
+              "n_call_nlp_grad": 0,
+              "n_call_nlp_grad_f": 17,
+              "n_call_nlp_jac_g": 17
+            },
+            "window": {
+              "count": 34,
+              "mean_seconds": 0.11190895432366019,
+              "p50_seconds": 0.09239717650052626,
+              "p95_seconds": 0.23351547705105974,
+              "p99_seconds": 0.3347160360801719,
+              "max_seconds": 0.3677829349999229,
+              "deadline_misses": 28
+            }
+          },
+          "cold_detailed_check": {
+            "max_position_error_m": 0.03223140488097265,
+            "max_speed_error_mps": 0.024478874097269454,
+            "predicted_net_j": -8744.760480057303,
+            "detailed_net_j": -8894.34749665057,
+            "net_error_j": 149.58701659326653,
+            "drawn_error_j": 36.29994275108584,
+            "recovered_error_j": -113.28707384218069,
+            "detailed_maximum_constraint": -8.205666912175502e-05,
+            "detailed_feasible": true
+          },
+          "warm": {
+            "total_seconds": {
+              "mean": 0.12920255399985764,
+              "p50": 0.11149074499917333,
+              "p95": 0.20220025459993843,
+              "max": 0.22963079300097888
+            },
+            "optimizer_seconds": {
+              "mean": 0.11884932600005413,
+              "p50": 0.09962094050024461,
+              "p95": 0.19371756334967352,
+              "max": 0.2209404919994995
+            },
+            "initialization_seconds": {
+              "mean": 0.0008837485000185552,
+              "p50": 0.0008230410003307043,
+              "p95": 0.001245730949631252,
+              "max": 0.0012627359992620768
+            },
+            "postprocess_seconds": {
+              "mean": 0.007546663399807585,
+              "p50": 0.007380180999462027,
+              "p95": 0.01080694344918811,
+              "max": 0.011485866998555139
+            }
+          },
+          "warm_accepted": 10,
+          "warm_deadline_misses": 10,
+          "warm_cycles": 10,
+          "warm_iterations": {
+            "mean": 6.2,
+            "p50": 5.0,
+            "p95": 9.0,
+            "max": 9.0
+          },
+          "warm_detailed_checks": [
+            {
+              "max_position_error_m": 0.0314627584965379,
+              "max_speed_error_mps": 0.024733466268026305,
+              "predicted_net_j": -10873.936291585429,
+              "detailed_net_j": -11021.795494468945,
+              "net_error_j": 147.85920288351554,
+              "drawn_error_j": 31.441660574855632,
+              "recovered_error_j": -116.4175423086599,
+              "detailed_maximum_constraint": 0.0009945312290859931,
+              "detailed_feasible": true
+            },
+            {
+              "max_position_error_m": 0.03196804583772206,
+              "max_speed_error_mps": 0.024707535563278427,
+              "predicted_net_j": -9205.973594532881,
+              "detailed_net_j": -9352.33862646834,
+              "net_error_j": 146.36503193545832,
+              "drawn_error_j": 33.68094527611629,
+              "recovered_error_j": -112.68408665934112,
+              "detailed_maximum_constraint": 0.0009229100144025892,
+              "detailed_feasible": true
+            },
+            {
+              "max_position_error_m": 0.03129417387080302,
+              "max_speed_error_mps": 0.024945694230955162,
+              "predicted_net_j": -11190.219453849135,
+              "detailed_net_j": -11336.450270985097,
+              "net_error_j": 146.23081713596184,
+              "drawn_error_j": 29.852368657481748,
+              "recovered_error_j": -116.378448478481,
+              "detailed_maximum_constraint": 0.0019073193992014126,
+              "detailed_feasible": true
+            },
+            {
+              "max_position_error_m": 0.031867191139445694,
+              "max_speed_error_mps": 0.02488979019984683,
+              "predicted_net_j": -9149.683855266296,
+              "detailed_net_j": -9292.929314046538,
+              "net_error_j": 143.2454587802422,
+              "drawn_error_j": 30.823306284773025,
+              "recovered_error_j": -112.42215249547007,
+              "detailed_maximum_constraint": 0.0017138230654545339,
+              "detailed_feasible": true
+            },
+            {
+              "max_position_error_m": 0.031258890177426224,
+              "max_speed_error_mps": 0.02511128831251952,
+              "predicted_net_j": -11077.907185136643,
+              "detailed_net_j": -11222.46445630363,
+              "net_error_j": 144.55727116698836,
+              "drawn_error_j": 29.874815950262928,
+              "recovered_error_j": -114.68245521672361,
+              "detailed_maximum_constraint": 0.002627557870038544,
+              "detailed_feasible": false
+            },
+            {
+              "max_position_error_m": 0.03175053833889585,
+              "max_speed_error_mps": 0.025073024574428615,
+              "predicted_net_j": -9285.028901452584,
+              "detailed_net_j": -9428.565867069161,
+              "net_error_j": 143.5369656165767,
+              "drawn_error_j": 30.808362656948702,
+              "recovered_error_j": -112.72860295962892,
+              "detailed_maximum_constraint": 0.002505381518371763,
+              "detailed_feasible": false
+            },
+            {
+              "max_position_error_m": 0.031153596916841053,
+              "max_speed_error_mps": 0.025279978484229915,
+              "predicted_net_j": -11127.949826155203,
+              "detailed_net_j": -11269.269808519286,
+              "net_error_j": 141.31998236408253,
+              "drawn_error_j": 27.042327686023782,
+              "recovered_error_j": -114.27765467805875,
+              "detailed_maximum_constraint": 0.0033609815715607283,
+              "detailed_feasible": false
+            },
+            {
+              "max_position_error_m": 0.030595128845005704,
+              "max_speed_error_mps": 0.025479795469284916,
+              "predicted_net_j": -12609.539624050365,
+              "detailed_net_j": -12752.250346727205,
+              "net_error_j": 142.7107226768403,
+              "drawn_error_j": 25.61447773963573,
+              "recovered_error_j": -117.09624493720548,
+              "detailed_maximum_constraint": 0.0041875498675914,
+              "detailed_feasible": false
+            },
+            {
+              "max_position_error_m": 0.03156055218485143,
+              "max_speed_error_mps": 0.025327973914851754,
+              "predicted_net_j": -9510.907677900199,
+              "detailed_net_j": -9651.304970758307,
+              "net_error_j": 140.3972928581079,
+              "drawn_error_j": 28.760364263996962,
+              "recovered_error_j": -111.63692859411094,
+              "detailed_maximum_constraint": 0.0036052707605804812,
+              "detailed_feasible": false
+            },
+            {
+              "max_position_error_m": 0.031013229293915145,
+              "max_speed_error_mps": 0.025514978899851215,
+              "predicted_net_j": -11207.144381206948,
+              "detailed_net_j": -11347.997154721998,
+              "net_error_j": 140.8527735150492,
+              "drawn_error_j": 26.71514928259421,
+              "recovered_error_j": -114.13762423245498,
+              "detailed_maximum_constraint": 0.004378106960505335,
+              "detailed_feasible": false
+            }
+          ],
+          "last_status": "Solve_Succeeded"
+        }
+      }
+    }
+  ]
+}

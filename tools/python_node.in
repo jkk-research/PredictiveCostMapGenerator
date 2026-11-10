@@ -1,0 +1,5 @@
+#!@Python3_EXECUTABLE@
+from plan_predictive_cost_map.@NODE_NAME@ import main
+
+if __name__ == '__main__':
+    main()
