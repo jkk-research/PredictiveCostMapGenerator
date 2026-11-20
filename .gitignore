@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+build/
+install/
+log/
+jit_tmp*.c
+tmp_casadi_compiler_shell*

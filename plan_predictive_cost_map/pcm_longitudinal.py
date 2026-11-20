@@ -14,10 +14,6 @@ from scipy import interpolate
 from scipy.ndimage import uniform_filter1d
 from geometry_msgs.msg import Vector3
 
-#import matplotlib.pyplot as plt
-#import matplotlib as mpl
-#from do_mpc.data import save_results
-
 import rclpy
 from rclpy.node import Node
 from autoware_control_msgs.msg import Control
@@ -31,10 +27,6 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy
 from rcl_interfaces.msg import ParameterDescriptor
 from dataclasses import dataclass, field, fields
 import math
-import matplotlib
-matplotlib.use("TkAgg") # GUI backend
-import matplotlib.pyplot as plt
-import matplotlib.patches as patches
 import time
 from rclpy.executors import MultiThreadedExecutor
 import threading
@@ -48,7 +40,6 @@ from plan_predictive_cost_map.pcm_scenario import (
     ObjectState, PredictionBranch, ScenarioSettings, parse_scenario, scenario_worker)
 import multiprocessing
 import queue
-plt.ion() # interactive mode
 
 @dataclass
 class EgoState:
@@ -689,13 +680,14 @@ class pcm_node(Node):
     def compiled_nlp(self, plugin, nlp, options):
         # Compile the NLP oracle once; later starts reuse the library when the generated code is unchanged.
         import hashlib
-        import os
+        import platform
         from pathlib import Path
+        import shutil
         import subprocess
         import tempfile
 
         flags = ['-O2', '-fPIC', '-shared']
-        cache = Path(os.environ.get('XDG_CACHE_HOME', Path.home() / '.cache')) / 'pcm_longitudinal'
+        cache = Path(os.environ.get('XDG_CACHE_HOME') or Path.home() / '.cache') / 'pcm_longitudinal'
         cache.mkdir(mode=0o700, parents=True, exist_ok=True)
         is_function = isinstance(nlp, ca.Function)
         generator = nlp if is_function else ca.nlpsol('generator', plugin, nlp, options)
@@ -710,14 +702,19 @@ class pcm_node(Node):
             finally:
                 os.chdir(previous)
             source = Path(work) / 'pcm_nlp.c'
-            digest = hashlib.sha256(source.read_bytes() + ' '.join(flags + [plugin, ca.__version__]).encode())
+            signature = [*flags, plugin, ca.__version__, platform.system(), platform.machine()]
+            digest = hashlib.sha256(source.read_bytes() + ' '.join(signature).encode())
             library = cache / f'{plugin}_{digest.hexdigest()[:20]}.so'
             if library.exists():
                 self.get_logger().info(f'Using cached compiled planner NLP {library}')
                 return str(library)
+            compiler = shutil.which('gcc')
+            if compiler is None:
+                raise RuntimeError('Planner JIT needs gcc on a cold cache. Install build-essential or launch '
+                                   'with planner_jit:=false actuator_jit:=false.')
             self.get_logger().warn(f'Compiling planner NLP once to {library}; this takes a few minutes')
             started = default_timer()
-            subprocess.run(['gcc', *flags, str(source), '-o', str(Path(work) / 'pcm_nlp.so')], check=True)
+            subprocess.run([compiler, *flags, str(source), '-o', str(Path(work) / 'pcm_nlp.so')], check=True)
             os.replace(Path(work) / 'pcm_nlp.so', library)
             self.get_logger().info(f'Compiled planner NLP in {default_timer() - started:.0f} s')
         return str(library)

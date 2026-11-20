@@ -2,19 +2,12 @@
 <package format="3">
   <name>plan_predictive_cost_map</name>
   <version>0.0.0</version>
-  <description>TODO: Package description</description>
+  <description>Python longitudinal planner using predictive Gaussian-process cost maps.</description>
   <maintainer email="dobayt@todo.todo">dobayt</maintainer>
   <license>Apache-2.0</license>
 
-  <!-- Specify the Python build system -->
   <buildtool_depend>ament_cmake</buildtool_depend>
   <buildtool_depend>ament_cmake_python</buildtool_depend>
-  <depend>rclcpp</depend>
-  <build_depend>crp_msgs</build_depend>
-  <build_depend>autoware_control_msgs</build_depend>
-  <build_depend>autoware_planning_msgs</build_depend>
-  <build_depend>std_msgs</build_depend>
-  <build_depend>eigen</build_depend>
 
   <!-- runtime dependencies -->
   <exec_depend>rclpy</exec_depend>
@@ -23,19 +16,12 @@
   <exec_depend>autoware_planning_msgs</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
   <exec_depend>python3-scipy</exec_depend>
-  <exec_depend>python3-shapely</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>visualization_msgs</exec_depend>
   <exec_depend>std_msgs</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
-  <exec_depend>autoware_auto_control_msgs</exec_depend>
-  <exec_depend>autoware_auto_planning_msgs</exec_depend>
-  <exec_depend>autoware_auto_vehicle_msgs</exec_depend>
-  <exec_depend>nav_msgs</exec_depend>
-  <exec_depend>pacmod3_msgs</exec_depend>
   <exec_depend>ros2launch</exec_depend>
   <exec_depend>crp_msgs</exec_depend>
-  <exec_depend>scenario_generation</exec_depend>
   <exec_depend>simulator</exec_depend>
   <exec_depend>ament_index_python</exec_depend>
 
@@ -43,7 +29,9 @@
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
   <test_depend>ament_pep257</test_depend>
-  <test_depend>pytest</test_depend>
+  <test_depend>python3-pytest</test_depend>
+  <test_depend>scenario_generation</test_depend>
+  <test_depend>tier4_planning_msgs</test_depend>
   <test_depend>ament_cmake_pytest</test_depend>
 
   <export>

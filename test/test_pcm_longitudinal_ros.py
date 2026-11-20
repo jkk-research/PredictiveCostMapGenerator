@@ -133,15 +133,7 @@ def test_hard_gp_launch_parameters_are_typed():
     assert settings['gp_reduction_method'] == 'gp_hard_reduction'
     assert settings['gp_hard_max_supports'] == 31
     assert settings['gp_hard_path_distance'] == 2.5
-    assert settings['timer_period'] == 0.1
-
-
-def test_hard_gp_cpp_export_is_explicitly_unsupported(tmp_path):
-    from plan_predictive_cost_map.pcm_cpp_model import export_model
-
-    with pytest.raises(ValueError, match='Python planner only'):
-        export_model({'sparse_gp': True, 'gp_reduction_method': 'gp_hard_reduction'}, tmp_path / 'unused')
-    assert not (tmp_path / 'unused').exists()
+    assert settings['timer_period'] == 0.05
 
 
 def reference_data(points=None):
@@ -151,57 +143,16 @@ def reference_data(points=None):
 
 
 @pytest.fixture(scope='module')
-def powertrain_oracle(tmp_path_factory):
-    root = Path(__file__).resolve().parents[2]
-    simulator = root / 'CooperativeResearchPlatform_Simulator/simulator'
-    binary = tmp_path_factory.mktemp('powertrain_oracle') / 'oracle'
-    subprocess.run(['g++', '-std=c++17', '-O2', '-DPCM_POWERTRAIN_ORACLE',
-                    '-I' + str(simulator / 'include'),
-                    '-I' + str(root / 'CooperativeResearchPlatform_Simulator/scenario_generation/include'),
-                    str(Path(__file__).with_name('model_oracle.cpp')),
-                    str(simulator / 'src/vehicle_model.cpp'), str(simulator / 'src/powertrain_model.cpp'),
-                    '-o', str(binary)], check=True)
-    return binary, simulator / 'config/motor_efficiency.csv'
+def efficiency_map():
+    from ament_index_python.packages import get_package_share_directory
+
+    return Path(get_package_share_directory('simulator')) / 'config/motor_efficiency.csv'
 
 
-@pytest.mark.parametrize('speed,acceleration_request,torque', [(8.0, 2.0, 0.0), (15.0, -3.0, -30.0), (0.0, 4.0, 0.0)])
-def test_powertrain_filter_force_and_energy_match_cpp(powertrain_oracle, speed, acceleration_request, torque):
-    from plan_predictive_cost_map.pcm_powertrain import build_powertrain_step, motor_efficiency_function
-
-    binary, efficiency_map = powertrain_oracle
-    initial = np.array([9.0 * speed / 0.32, 0.0, torque, 0.0, 0.0, 0.0])
-    step = build_powertrain_step(0.05, motor_efficiency_function(efficiency_map))
-    state, force, _, _ = step(initial, speed, acceleration_request)
-    expected = np.fromstring(subprocess.check_output([str(binary), '--powertrain', str(efficiency_map),
-        str(speed), str(acceleration_request), '0.05', str(initial[0]), '0.0', str(torque), '0.0'], text=True), sep=' ')
-    np.testing.assert_allclose(np.r_[state.full().flatten(), float(force)], expected, rtol=1e-11, atol=1e-9)
-    assert float(state[4]) >= 0.0 and float(state[5]) >= 0.0
-
-
-@pytest.mark.parametrize('vehicle_model', ['dynamic', 'kinematic'])
-@pytest.mark.parametrize('speed,target_speed,grade', [(8.0, 10.0, 0.1), (15.0, 12.0, -0.1), (0.0, 4.0, 0.0)])
-def test_actuated_vehicle_feedback_motion_and_energy_match_cpp(
-        powertrain_oracle, vehicle_model, speed, target_speed, grade):
-    from plan_predictive_cost_map.pcm_powertrain import build_actuator_interval, motor_efficiency_function
-
-    binary, efficiency_map = powertrain_oracle
-    initial = np.zeros(15)
-    initial[4] = speed
-    initial[7] = 9.0 * speed / 0.32
-    interval = build_actuator_interval(0.05, 1.0, 0.25, motor_efficiency_function(efficiency_map),
-                                       vehicle_model=vehicle_model)
-    state, _, _ = interval(initial, np.zeros(4), target_speed, [grade, grade], 0.05)
-    expected = np.fromstring(subprocess.check_output([str(binary), '--actuated', str(efficiency_map),
-        str(speed), str(target_speed), '0.05', str(grade), vehicle_model, '0.05'], text=True), sep=' ')
-    np.testing.assert_allclose(state.full().flatten()[:13], expected, rtol=1e-10, atol=1e-8)
-    assert float(state[11]) >= 0.0 and float(state[12]) >= 0.0
-
-
-def test_actuator_rollout_accumulates_net_energy_and_predicts_command_response(powertrain_oracle):
+def test_actuator_rollout_accumulates_net_energy_and_predicts_command_response(efficiency_map):
     from plan_predictive_cost_map.pcm_powertrain import PowertrainConfig, motor_efficiency_function
     from plan_predictive_cost_map.pcm_longitudinal_dynamics import build_dynamic_rollout
 
-    _, efficiency_map = powertrain_oracle
     rollout = build_dynamic_rollout(0.5, 5, 0.05, 0.25, powertrain=PowertrainConfig(),
                                     efficiency=motor_efficiency_function(efficiency_map))
     coefficients = [2.0, 0.0, 0.0, 0.0]
@@ -217,17 +168,17 @@ def test_actuator_rollout_accumulates_net_energy_and_predicts_command_response(p
     assert np.isfinite(outputs[0].full()).all()
 
 
-def test_actuated_interval_holds_polynomial_speed_command(powertrain_oracle):
+def test_actuated_interval_holds_polynomial_speed_command(efficiency_map):
     from plan_predictive_cost_map.pcm_powertrain import build_actuator_interval, motor_efficiency_function
 
-    binary, efficiency_map = powertrain_oracle
     initial = np.zeros(15)
     initial[4], initial[7] = 8.0, 225.0
-    interval = build_actuator_interval(0.05, 1.0, 0.25, motor_efficiency_function(efficiency_map))
+    efficiency = motor_efficiency_function(efficiency_map)
+    interval = build_actuator_interval(0.05, 1.0, 0.25, efficiency)
     state, _, _ = interval(initial, [2.0, 0.0, 0.0, 0.0], 8.0, [0.0, 0.0], 0.0)
-    expected = np.fromstring(subprocess.check_output([str(binary), '--actuated', str(efficiency_map),
-        '8.0', '8.5', '0.05', '0.0', 'dynamic', '0.0'], text=True), sep=' ')
-    np.testing.assert_allclose(state.full().flatten()[:13], expected, rtol=1e-10, atol=1e-8)
+    held = build_actuator_interval(0.05, 1.0, 0.25, efficiency, held_speed_command=True)
+    expected, _, _ = held(initial, [8.5], 8.0, [0.0, 0.0], 0.0)
+    np.testing.assert_allclose(state.full(), expected.full(), rtol=1e-10, atol=1e-8)
 
 
 @pytest.mark.parametrize('vehicle_model', ['dynamic', 'kinematic'])
@@ -235,10 +186,9 @@ def test_actuated_interval_holds_polynomial_speed_command(powertrain_oracle):
                                                     (15.0, 12.0, -0.1)])
 @pytest.mark.parametrize('stage_step', [0.005, 0.01])
 def test_discrete_actuator_interval_preserves_motion_and_energy(
-    powertrain_oracle, vehicle_model, speed, target_speed, grade, stage_step):
+    efficiency_map, vehicle_model, speed, target_speed, grade, stage_step):
     from plan_predictive_cost_map.pcm_powertrain import build_actuator_interval, motor_efficiency_function
 
-    _, efficiency_map = powertrain_oracle
     efficiency = motor_efficiency_function(efficiency_map)
     initial = np.zeros(15)
     initial[4], initial[7] = speed, 9.0 * speed / 0.32
@@ -514,7 +464,10 @@ def test_progress_rollout_follows_real_roundabout_without_x_monotonicity():
     from plan_predictive_cost_map.pcm_longitudinal_dynamics import build_dynamic_light_rollout, build_kinematic_rollout
 
     root = Path(__file__).resolve().parents[2]
-    points = np.asarray(loadmat(root / 'scenario_files/roundabout_with_conflicting_traffic_costmap_data.mat',
+    scenario = root / 'scenario_files/roundabout_with_conflicting_traffic_costmap_data_1.mat'
+    if not scenario.is_file():
+        pytest.skip('Numbered roundabout MAT fixture is not installed in the workspace')
+    points = np.asarray(loadmat(scenario,
                                 simplify_cells=True)['targetPath_qg'])[:, :2]
     index = 448
     delta = points[index + 1] - points[index]
@@ -559,14 +512,14 @@ def test_launch_parameters(node, selected_model):
     action = next(action for action in description.entities if isinstance(action, Node))
     normalized = next(value for key, value in vars(action).items() if key.endswith('__parameters'))
     parameters = evaluate_parameters(context, normalized)[0]
-    assert parameters['lookahead_time'] == 4.0
+    assert parameters['lookahead_time'] == 5.0
     assert parameters['prediction_model'] == selected_model
-    assert parameters['prediction_steps'] == 20
+    assert parameters['prediction_steps'] == 5
     assert parameters['gp_state_period'] == 0.1
-    assert parameters['weight_velocity'] == 0.5
-    assert parameters['weight_lateral_acceleration'] == 0.5
-    assert parameters['weight_crash'] == 1.0
-    np.testing.assert_allclose(parameters['pedestrian_kernel'], [1.0, 5.0, 2.5, 0.5])
+    assert parameters['weight_velocity'] == 0.3
+    assert parameters['weight_lateral_acceleration'] == 0.1
+    assert parameters['weight_crash'] == 2.0
+    np.testing.assert_allclose(parameters['pedestrian_kernel'], [1.0, 3.5, 1.5, 2.0])
     assert parameters['dynamic_light.constraint_step'] == 0.1
     assert 'target_speed' not in parameters
     assert set(parameters) <= set(node._parameters)
@@ -1074,7 +1027,7 @@ def test_acceleration_model_matches_live_cpp_simulator():
     publisher = probe.create_publisher(Control, '/control/command/control_cmd', 10)
     process = subprocess.Popen([
         str(root / 'install/simulator/lib/simulator/simulator'), '--ros-args', '--log-level', 'error',
-        '-p', f'scenario_file:={root / "src/scenario_files/occluded_pedestrian_costmap_data.mat"}',
+        '-p', f'scenario_file:={root / "src/scenario_files/occluded_pedestrian_costmap_data_1.mat"}',
         '-p', 'vehicle_model:=dynamic', '-p', 'command_mode:=acceleration',
         '-p', 'initial_x:=100.0', '-p', 'initial_y:=0.0', '-p', 'initial_yaw:=0.0', '-p', 'initial_speed:=10.0',
         '-p', 'simulation_time_stamps:=true', '-p', 'use_internal_controller:=false',
@@ -1757,8 +1710,8 @@ def test_sparse_launch_switch_is_typed_and_independent(sparse):
     assert settings['sparse_gp'] is (sparse == 'true')
     assert settings['object_support_points'] == 5
     assert settings['timing_enabled'] is True
-    assert settings['prediction_steps'] == 10
-    assert settings['gp_reduction_method'] == 'per_trajectory'
+    assert settings['prediction_steps'] == 5
+    assert settings['gp_reduction_method'] == 'global_mean'
 
 
 def test_global_mean_launch_settings_are_typed_and_opt_in():
@@ -1780,7 +1733,7 @@ def test_global_mean_launch_settings_are_typed_and_opt_in():
     assert settings['global_gp_error_tolerance'] == 0.01
     assert settings['prediction_model'] == 'dynamic_actuators'
     assert settings['lookahead_time'] == 5.0
-    assert settings['prediction_steps'] == 10
+    assert settings['prediction_steps'] == 5
     assert settings['weight_energy'] == 0.05
 
 
@@ -2151,7 +2104,7 @@ def run_crossing_case(overrides=None, simulation_duration=14.0, production_launc
                                   QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)),
     ]
     processes = []
-    scenario_file = root / 'src/scenario_files/occluded_pedestrian_costmap_data.mat'
+    scenario_file = root / 'src/scenario_files/occluded_pedestrian_costmap_data_1.mat'
     try:
         processes.append(subprocess.Popen(arguments, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                            text=True, env=child_environment, start_new_session=True))

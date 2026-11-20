@@ -3,21 +3,64 @@
 This summarizes the Python `pcm_longitudinal` planner with the defaults in
 [pcm_longitudinal.launch.py](launch/pcm_longitudinal.launch.py). It describes a
 longitudinal optimizer following a prescribed route, not a lateral path planner.
-For experiments and implementation history, see [README_PLANNER.md](README_PLANNER.md).
+The release contains the Python planner and optional GP cost-map viewer only.
+
+## Install On A New Machine
+
+Use Ubuntu 22.04 (or WSL Ubuntu 22.04) with ROS 2 Humble and Python 3.10.
+Place this repository alongside the CRP message packages, Autoware message
+packages, and `CooperativeResearchPlatform_Simulator` in the ROS workspace.
+The actuator model uses the motor efficiency CSV installed by `simulator` unless
+you pass `motor_efficiency_map:=/path/to/map.csv`.
+
+From the workspace root, with ROS, `colcon`, `rosdep`, and `pip` already installed:
+
+```bash
+source /opt/ros/humble/setup.bash
+rosdep install --from-paths src --ignore-src --rosdistro humble -y
+sudo apt install build-essential
+python3 -m pip install --user -r src/PredictiveCostMapGenerator/requirements.txt
+colcon --log-base log-release build --build-base build-release \
+       --install-base install-release --packages-up-to plan_predictive_cost_map
+source install-release/setup.bash
+```
+
+Use the fresh build/install directories above when upgrading an existing
+workspace so old native executables and launch files cannot remain visible.
+There is no native planner header, NLopt install, or manually copied cache file
+to provision. With JIT enabled, the node generates its CasADi libraries on first
+start using `gcc`. The default actuator configuration can take several minutes
+to compile. Later launches reuse the
+libraries for the same configuration. The cache defaults to
+`~/.cache/pcm_longitudinal` (or `$XDG_CACHE_HOME/pcm_longitudinal`); use a writable
+location and regenerate locally rather than copying binaries between machines.
+With no compiler, or when diagnosing startup, launch with
+`planner_jit:=false actuator_jit:=false`. This keeps the same model but can be
+slower. No separate cache configuration script is required.
+
+Run the release regressions from the same workspace:
+
+```bash
+colcon --log-base log-release test --build-base build-release \
+       --install-base install-release --packages-select plan_predictive_cost_map \
+       --return-code-on-test-failure
+colcon test-result --test-result-base build-release --verbose
+```
 
 ## Settings
 
 | Setting | Current launch value |
 | --- | --- |
 | Prediction / underlying vehicle | `dynamic_actuators` / dynamic bicycle |
-| Horizon / GP and trajectory samples | $T=5\,\mathrm{s}$ / $N=10$, at $t_i=iT/N$ |
+| Horizon / GP and trajectory samples | $T=5\,\mathrm{s}$ / $N=5$, at $t_i=iT/N$ |
 | Replanning / internal controller interval | $0.05\,\mathrm{s}$ / $0.05\,\mathrm{s}$ |
 | Published speed-command lookahead | $0.25\,\mathrm{s}$ |
+| Published steering | `predicted`, sampled at $0.25\,\mathrm{s}$ |
 | Actuator integration | `discrete`, stages of at most $0.005\,\mathrm{s}$ |
 | Motor efficiency | `spline`; maximum sampled LUT-fit error $0.05$ |
-| Dynamic GP compression | `sparse_gp=true`, `gp_reduction_method=per_trajectory` |
-| Selected supports | 5 per retained object-prediction branch, unless full-mean recovery is needed |
-| Object / branch capacity | 2 pedestrians, 2 vehicles; at most 2 branches per object |
+| Dynamic GP compression | `sparse_gp=true`, `gp_reduction_method=global_mean` |
+| Selected supports | Per GP reduction mode; full-mean recovery can retain all supports |
+| Object / branch capacity | 15 pedestrians, 15 vehicles; at most 2 branches per object |
 | Static target / drivable GP supports | 128 / 128; progress-reference samples: 96 |
 | Optimization | Dense SLSQP, exact CasADi derivatives, cached compiled oracles |
 | Solver tolerance / GP cost limit | $10^{-3}$ / $0.05$ |
@@ -239,7 +282,8 @@ exact second-order SLSQP Hessian. Solver status, finiteness, and constraint resi
 are checked before publication; no generated braking-trajectory fallback is used.
 Compiled NLP/reporting libraries are cached; first-time compilation can be slow.
 
-**Fixed slots:** both dynamic GP layers reserve $2\times2\times10=40$ symbolic
+**Fixed slots:** with the default model and launch settings, each dynamic GP
+layer reserves $15\times2\times5=150$ symbolic
 supports for full-mean recovery, even when only a few have nonzero weights.
 Each static GP reserves 128 supports. Selected supports are parameters, not extra
 decision variables. Fewer active supports do not shrink these compiled expressions;
@@ -250,14 +294,15 @@ deadline or a claim of closed-loop safety.
 ## Run
 
 ```bash
-source ~/ros2_ws/install/setup.bash
+source ~/ros2_ws/install-release/setup.bash
 ros2 launch plan_predictive_cost_map pcm_longitudinal.launch.py
 ```
 
 Inputs: `/ego`, `/scenario`, and `/simulator/actuator_state`. Outputs include
 `/control/command/control_cmd`, `/plan/trajectory`, GP snapshots, and timing JSON on
-`/plan/pcm_longitudinal/timing`. The supplied launch also starts the GP viewer and
-uses a separate scenario-preprocessing worker. Model, reduction, and compilation
+`/plan/pcm_longitudinal/timing`. To start the optional viewer, pass
+`start_costmap_viewer:=true`. The launch uses a separate scenario-preprocessing
+worker. Model, reduction, steering, and compilation
 settings require restart; topic data remain runtime inputs.
 
 Implementation: [vehicle](plan_predictive_cost_map/planner/dynamics.py),
