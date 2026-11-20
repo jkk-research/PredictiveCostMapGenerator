@@ -26,6 +26,124 @@ from plan_predictive_cost_map.pcm_longitudinal_dynamics import shift_velocity_co
 from plan_predictive_cost_map.pcm_costmap_viewer import CostmapViewer, evaluate_field, road_height, surface_messages, validate_snapshot
 
 
+@pytest.mark.parametrize('capacity', [1, 4, 40])
+@pytest.mark.parametrize('candidate_count', [0, 7, 24])
+def test_hard_gp_distance_selection_keeps_original_coefficients(capacity, candidate_count):
+    from plan_predictive_cost_map.pcm_kernels import compress_hard_rbf_mean, numeric_rbf_kernel
+
+    generator = np.random.default_rng(42)
+    points = generator.normal(size=(24, 3))
+    kernel = [1.2, 3.0, 1.5, 0.5]
+    matrix = numeric_rbf_kernel(points, points, kernel)
+    alpha = np.linalg.solve(matrix + 0.1 * np.eye(len(points)), np.ones(len(points)))
+    selected, beta, bound = compress_hard_rbf_mean(
+        points, alpha, kernel, np.arange(candidate_count), capacity)
+    assert len(selected) <= capacity
+    assert len(np.unique(selected)) == len(selected)
+    np.testing.assert_array_equal(beta, alpha[selected])
+    assert bound == 0.0
+    if candidate_count:
+        assert selected[0] == 0
+    if capacity == 4 and candidate_count > 4:
+        scaled = points[:candidate_count] / np.asarray(kernel[1:])
+        for position in range(1, len(selected)):
+            distances = np.min(np.sum((scaled[:, None] - scaled[selected[:position]])**2, axis=2), axis=1)
+            assert selected[position] == np.argmax(distances)
+
+
+@pytest.mark.parametrize('capacity', [2, 5, 40])
+@pytest.mark.parametrize('selected_model', ['kinematic', 'dynamic_light', 'dynamic', 'dynamic_actuators'])
+def test_hard_gp_node_reserves_only_capped_capacity(capacity, selected_model):
+    rclpy.init(args=['--ros-args', '-p', 'prediction_model:=' + selected_model,
+        '-p', 'lookahead_time:=0.5', '-p', 'prediction_steps:=4',
+        '-p', 'sparse_gp:=true', '-p', 'gp_reduction_method:=gp_hard_reduction',
+        '-p', 'gp_hard_max_supports:=' + str(capacity),
+        '-p', 'scenario_worker:=false', '-p', 'planner_solver.jit:=false', '-p', 'actuator_solver.jit:=false'])
+    planner = pcm_node()
+    try:
+        assert planner.pedestrian_support_count + planner.vehicle_support_count <= capacity
+        assert planner.pedestrian_support_count == min(16, (capacity + 1) // 2)
+        assert planner.vehicle_support_count == min(16, capacity // 2)
+        assert planner.target_support_points == planner.drivable_support_points == 128
+        assert not planner.exact_gp_capacity
+        planner.reference_data = reference_data()
+        field = planner.fsup_eval(np.zeros(planner.M), prediction_parameters(planner))
+        assert all(np.isfinite(value.full()).all() for value in field)
+        for field_capacity in (planner.pedestrian_support_count, planner.vehicle_support_count):
+            points, alpha, metadata = planner.fit_dynamic_gp([], 2, planner.p_veh, 1, 0.02, 0.15, field_capacity)
+            assert points.shape == (field_capacity, 3)
+            assert alpha.shape == (field_capacity,)
+            assert metadata['error_bound'] == 0
+            assert metadata['compression'] == 'hard_support_deletion'
+            assert metadata['error_bound_certified'] is False
+    finally:
+        planner.destroy_node()
+        rclpy.shutdown()
+
+
+@pytest.mark.parametrize('crossing', [True, False])
+def test_hard_gp_path_filter_deletes_supports_without_reweighting(crossing):
+    from plan_predictive_cost_map.pcm_kernels import numeric_rbf_kernel
+    from plan_predictive_cost_map.pcm_longitudinal import PredictionBranch
+
+    helper = SimpleNamespace(N=10, t=ca.DM(np.linspace(0.2, 2, 10)), dt=0.2,
+        max_predicted_paths=2, sparse_gp=True, gp_reduction_method='gp_hard_reduction',
+        gp_hard_max_supports=4, gp_hard_path_distance=3.0, max_gp_cost=0.05,
+        lanes={'ego_lane_x': [0, 50], 'ego_lane_y': [0, 0]})
+    helper.sample_object_path = lambda obj, branch: pcm_node.sample_object_path(helper, obj, branch)
+    helper.hard_gp_near_path = lambda obj, branches, kernel: pcm_node.hard_gp_near_path(helper, obj, branches, kernel)
+    helper.get_logger = lambda: SimpleNamespace(warn=lambda *args, **kwargs: None)
+    objects = [ObjectState(12, 40, 0, 0, 0, 7), ObjectState(12, 40, 0, 0, 0, 7,
+        predicted_branches=[PredictionBranch(np.array([[12., 40.], [12., -40.]]), 2.0, 1.0)])]
+    if not crossing:
+        objects = objects[:1]
+    kernel = [1., 3., 1.5, 0.5]
+    points, alpha, metadata = pcm_node.fit_dynamic_gp(helper, objects, 2, kernel, 3, 0.02, 0.15, 2)
+    assert len(points) == 2
+    assert metadata['filtered_object_count'] == 1
+    assert metadata['candidate_support_count'] == (10 if crossing else 0)
+    assert all(index >= 10 for index in metadata['selected_source_indices'])
+    assert metadata['reduction_method'] == 'gp_hard_reduction'
+    helper.sparse_gp = False
+    original_points, original_alpha, _ = pcm_node.fit_dynamic_gp(helper, objects, 2, kernel, 3, 0.02, 0.15)
+    selected = metadata['selected_source_indices']
+    np.testing.assert_array_equal(points[:len(selected)], original_points[selected])
+    np.testing.assert_array_equal(alpha[:len(selected)], original_alpha[selected])
+    np.testing.assert_array_equal(alpha[len(selected):], 0.0)
+    assert metadata['error_bound'] == 0.0
+    assert metadata['error_bound_certified'] is False
+    queries = np.random.default_rng(42).uniform([0, -50, 0], [25, 50, 3], (1000, 3))
+    reduced = numeric_rbf_kernel(queries, points, kernel) @ alpha
+    expected = numeric_rbf_kernel(queries, original_points[selected], kernel) @ original_alpha[selected]
+    np.testing.assert_allclose(reduced, expected, rtol=0, atol=1e-14)
+
+
+def test_hard_gp_launch_parameters_are_typed():
+    launch_file = Path(__file__).resolve().parents[1] / 'launch/pcm_longitudinal.launch.py'
+    description = runpy.run_path(str(launch_file))['generate_launch_description']()
+    context = LaunchContext()
+    context.launch_configurations.update(gp_reduction_method='gp_hard_reduction',
+                                        gp_hard_max_supports='31', gp_hard_path_distance='2.5')
+    for action in description.entities:
+        if isinstance(action, DeclareLaunchArgument):
+            action.execute(context)
+    action = next(action for action in description.entities if isinstance(action, Node))
+    normalized = next(value for key, value in vars(action).items() if key.endswith('__parameters'))
+    settings = evaluate_parameters(context, normalized)[0]
+    assert settings['gp_reduction_method'] == 'gp_hard_reduction'
+    assert settings['gp_hard_max_supports'] == 31
+    assert settings['gp_hard_path_distance'] == 2.5
+    assert settings['timer_period'] == 0.1
+
+
+def test_hard_gp_cpp_export_is_explicitly_unsupported(tmp_path):
+    from plan_predictive_cost_map.pcm_cpp_model import export_model
+
+    with pytest.raises(ValueError, match='Python planner only'):
+        export_model({'sparse_gp': True, 'gp_reduction_method': 'gp_hard_reduction'}, tmp_path / 'unused')
+    assert not (tmp_path / 'unused').exists()
+
+
 def reference_data(points=None):
     from plan_predictive_cost_map.pcm_lane_geometry import prepare_progress_reference
 
@@ -1640,27 +1758,135 @@ def test_sparse_launch_switch_is_typed_and_independent(sparse):
     assert settings['object_support_points'] == 5
     assert settings['timing_enabled'] is True
     assert settings['prediction_steps'] == 10
+    assert settings['gp_reduction_method'] == 'per_trajectory'
+
+
+def test_global_mean_launch_settings_are_typed_and_opt_in():
+    launch_file = Path(__file__).resolve().parents[1] / 'launch/pcm_longitudinal.launch.py'
+    description = runpy.run_path(str(launch_file))['generate_launch_description']()
+    context = LaunchContext()
+    context.launch_configurations.update(gp_reduction_method='global_mean', global_gp_min_supports='3',
+        global_gp_initial_fraction='0.1', global_gp_distance_threshold='0.5', global_gp_error_tolerance='0.01')
+    for action in description.entities:
+        if isinstance(action, DeclareLaunchArgument):
+            action.execute(context)
+    action = next(action for action in description.entities if isinstance(action, Node))
+    normalized = next(value for key, value in vars(action).items() if key.endswith('__parameters'))
+    settings = evaluate_parameters(context, normalized)[0]
+    assert settings['gp_reduction_method'] == 'global_mean'
+    assert settings['global_gp_min_supports'] == 3
+    assert settings['global_gp_initial_fraction'] == 0.1
+    assert settings['global_gp_distance_threshold'] == 0.5
+    assert settings['global_gp_error_tolerance'] == 0.01
+    assert settings['prediction_model'] == 'dynamic_actuators'
+    assert settings['lookahead_time'] == 5.0
+    assert settings['prediction_steps'] == 10
+    assert settings['weight_energy'] == 0.05
+
+
+@pytest.mark.parametrize('population', [0, 1, 2])
+def test_global_mean_fit_uses_full_pool_and_keeps_original_mean_bound(population):
+    from plan_predictive_cost_map.pcm_kernels import numeric_rbf_kernel
+    from plan_predictive_cost_map.pcm_longitudinal import PredictionBranch
+
+    times = np.linspace(0.2, 2.0, 10)
+    helper = SimpleNamespace(N=10, t=ca.DM(times), dt=0.2, max_predicted_paths=2, sparse_gp=True,
+        object_support_points=2, gp_reduction_method='global_mean', global_gp_min_supports=2,
+        global_gp_initial_fraction=0.0, global_gp_distance_threshold=0.75,
+        global_gp_error_tolerance=0.02, max_gp_cost=0.05)
+    helper.sample_object_path = lambda obj, branch: pcm_node.sample_object_path(helper, obj, branch)
+    sample_times = np.linspace(0, 2.0, 21)
+    objects = [ObjectState(12, -2, 0, 0, 0, 7, predicted_branches=[PredictionBranch(
+        np.column_stack((np.full(21, 12.0), -2 + sample_times)), 0.1, 1.0)]) for _ in range(population)]
+    kernel = [1.0, 3.5, 1.5, 2.0]
+    points, alpha, metadata = pcm_node.fit_dynamic_gp(helper, objects, 2, kernel, 3.0, 0.02, 0.15)
+    assert len(points) == 40
+    assert metadata['candidate_support_count'] == population * 10
+    assert metadata['represented_branches'] == population
+    assert metadata['error_bound'] <= helper.global_gp_error_tolerance
+    assert metadata['active_support_count'] < population * 10 if population else metadata['active_support_count'] == 0
+    helper.sparse_gp = False
+    original_points, original_alpha, _ = pcm_node.fit_dynamic_gp(helper, objects, 2, kernel, 3.0, 0.02, 0.15)
+    queries = np.random.default_rng(42).uniform([0, -5, 0], [25, 5, 3], (1000, 3))
+    original = numeric_rbf_kernel(queries, original_points, kernel) @ original_alpha
+    reduced = numeric_rbf_kernel(queries, points, kernel) @ alpha
+    assert np.max(np.abs(original - reduced)) <= metadata['error_bound'] + 1e-10
+
+
+@pytest.mark.parametrize('rejected_bound,reason', [(3.0, 'gp_cost_floor'), (0.03, 'error_tolerance')])
+def test_global_mean_fit_recovers_original_when_compression_is_rejected(monkeypatch, rejected_bound, reason):
+    import plan_predictive_cost_map.pcm_longitudinal as module
+
+    helper = SimpleNamespace(N=10, t=ca.DM(np.linspace(0.2, 2.0, 10)), dt=0.2,
+        max_predicted_paths=2, sparse_gp=True, object_support_points=2,
+        gp_reduction_method='global_mean', global_gp_min_supports=2, global_gp_initial_fraction=0,
+        global_gp_distance_threshold=0.75, global_gp_error_tolerance=0.02, max_gp_cost=0.05)
+    helper.sample_object_path = lambda obj, branch: pcm_node.sample_object_path(helper, obj, branch)
+    monkeypatch.setattr(module, 'compress_global_rbf_mean',
+        lambda *args: (np.array([0]), np.array([0.0]), rejected_bound))
+    actor = ObjectState(10, -2, 1, 0, 0, 7)
+    points, alpha, metadata = pcm_node.fit_dynamic_gp(helper, [actor], 2, [1, 3.5, 1.5, 2], 3, 0.02, 0.15)
+    assert metadata['compression'] == 'original_full_mean'
+    assert metadata['error_bound'] == 0
+    assert metadata['recovery_reason'] == reason
+    helper.sparse_gp = False
+    original_points, original_alpha, _ = pcm_node.fit_dynamic_gp(helper, [actor], 2, [1, 3.5, 1.5, 2], 3, 0.02, 0.15)
+    np.testing.assert_array_equal(points, original_points)
+    np.testing.assert_array_equal(alpha, original_alpha)
 
 
 def test_sparse_gp_parameters_require_restart(node):
     from rclpy.parameter import Parameter
 
     results = node.set_parameters([Parameter('sparse_gp', value=True),
-                                   Parameter('object_support_points', value=2)])
+                                   Parameter('object_support_points', value=2),
+                                   Parameter('gp_reduction_method', value='global_mean'),
+                                   Parameter('global_gp_min_supports', value=2),
+                                   Parameter('global_gp_initial_fraction', value=0.1),
+                                   Parameter('global_gp_distance_threshold', value=0.5),
+                                   Parameter('global_gp_error_tolerance', value=0.01)])
     assert all(not result.successful for result in results)
     assert node.sparse_gp is False
 
 
+@pytest.mark.parametrize('selected_model', ['kinematic', 'dynamic_light', 'dynamic', 'dynamic_actuators'])
+def test_global_mean_planner_keeps_full_recovery_capacity_and_ego_samples(selected_model):
+    rclpy.init(args=['--ros-args', '-p', 'prediction_model:=' + selected_model,
+        '-p', 'lookahead_time:=0.5', '-p', 'prediction_steps:=4',
+        '-p', 'sparse_gp:=true', '-p', 'gp_reduction_method:=global_mean',
+        '-p', 'global_gp_min_supports:=2', '-p', 'global_gp_initial_fraction:=0.0',
+        '-p', 'scenario_worker:=false', '-p', 'planner_solver.jit:=false', '-p', 'actuator_solver.jit:=false'])
+    planner = pcm_node()
+    try:
+        assert planner.N == 4
+        assert planner.object_support_points == 9
+        assert planner.pedestrian_support_count == 16
+        assert planner.vehicle_support_count == 16
+        assert planner.dynamic_gp_error_sym.numel() == 2
+        points, alpha, metadata = planner.fit_dynamic_gp([], planner.max_vehicles, planner.p_veh,
+            planner.vehicle_cost_primitive, planner.vehicle_noise_base, planner.vehicle_noise_growth)
+        assert len(points) == len(alpha) == 16
+        assert metadata['compression'] == 'global_mean_rkhs_projection'
+        assert metadata['error_bound'] == 0
+        assert metadata['active_support_count'] == 0
+    finally:
+        planner.destroy_node()
+        rclpy.shutdown()
+
+
 @pytest.mark.parametrize('selected_model', ['kinematic', 'dynamic_light', 'dynamic'])
-def test_sparse_planner_keeps_ego_samples_and_snapshot_contract(selected_model):
+@pytest.mark.parametrize('reduction_method', ['per_trajectory', 'global_mean'])
+def test_sparse_planner_keeps_ego_samples_and_snapshot_contract(selected_model, reduction_method):
     rclpy.init(args=['--ros-args', '-p', 'prediction_model:=' + selected_model,
                      '-p', 'lookahead_time:=1.0', '-p', 'prediction_steps:=4',
                      '-p', 'sparse_gp:=true', '-p', 'object_support_points:=2',
+                     '-p', 'gp_reduction_method:=' + reduction_method,
+                     '-p', 'global_gp_min_supports:=2', '-p', 'global_gp_initial_fraction:=0.0',
                      '-p', 'scenario_worker:=false'])
     planner = pcm_node()
     try:
         assert planner.N == 4
-        capacity = 16 if selected_model in ('kinematic', 'dynamic_light') else 8
+        capacity = 16 if selected_model in ('kinematic', 'dynamic_light') or reduction_method == 'global_mean' else 8
         assert planner.object_support_points == 2
         assert planner.pedestrian_support_count == capacity
         assert planner.vehicle_support_count == capacity
@@ -1690,9 +1916,85 @@ def test_sparse_planner_keeps_ego_samples_and_snapshot_contract(selected_model):
         np.testing.assert_allclose(evaluate_field(snapshot, query),
             planner.fsup_eval(planner.c_numeric, planner.p_numeric)[0].full().flatten(), atol=1e-8)
         assert snapshot['layers']['pedestrian']['offset'] >= -1.0
+        if reduction_method == 'global_mean':
+            assert planner.dynamic_gp_state['pedestrian']['compression'] == 'global_mean_rkhs_projection'
+            assert planner.dynamic_gp_state['pedestrian']['error_bound'] <= planner.global_gp_error_tolerance
     finally:
         planner.destroy_node()
         rclpy.shutdown()
+
+
+@pytest.mark.parametrize('mode', ['zero', 'pure_pursuit', 'predicted'])
+def test_steering_command_modes(mode):
+    rclpy.init(args=['--ros-args', '-p', 'prediction_model:=kinematic', '-p', 'lookahead_time:=1.0',
+                     '-p', 'prediction_steps:=4', '-p', 'planner_solver.jit:=false',
+                     '-p', 'scenario_worker:=false', '-p', 'steering_command_mode:=' + mode,
+                     '-p', 'steering_lookahead_time:=0.13'])
+    planner = pcm_node()
+    try:
+        scenario = Scenario()
+        path = PathWithTrafficRules()
+        path.traffic_rules.maximum_speed = 5.0
+        for x in np.linspace(0.0, 40.0, 81):
+            point = PathPointWithLaneId()
+            point.point.pose.position.x = float(x)
+            point.point.pose.position.y = float(0.02 * x**2)
+            path.path.points.append(point)
+        scenario.paths = [path, path]
+        planner.ego_state.vx = 5.0
+        planner.ego_history.append((0, 0.0, 0.0, 0.0, 0.0, 0.0))
+        planner.scenario_callback(scenario)
+        commands = []
+        planner.cmd_pub = SimpleNamespace(publish=commands.append)
+        planner.last_exec = 0.0
+        planner.callback()
+        assert len(commands) == 1
+        prediction = planner.rollout_eval(planner.c_numeric, planner.p_numeric)
+        assert commands[0].longitudinal.velocity == pytest.approx(float(prediction[4]))
+        steering = commands[0].lateral.steering_tire_angle
+        if mode == 'predicted':
+            assert steering == pytest.approx(float(prediction[-1]))
+            assert steering > 0.01
+        elif mode == 'pure_pursuit':
+            assert steering == pytest.approx(math.atan2(2.0 * 2.7 * 1.125, 7.5**2 + 1.125**2))
+        else:
+            assert steering == 0.0
+    finally:
+        planner.destroy_node()
+        rclpy.shutdown()
+
+
+@pytest.mark.parametrize('model', ['kinematic', 'dynamic_light', 'dynamic', 'dynamic_actuators'])
+def test_steering_lookahead_does_not_change_rollout(model):
+    from plan_predictive_cost_map.pcm_lane_geometry import prepare_progress_reference
+    from plan_predictive_cost_map.pcm_longitudinal_dynamics import (
+        build_dynamic_light_rollout, build_dynamic_rollout, build_kinematic_rollout)
+    from plan_predictive_cost_map.pcm_powertrain import PowertrainConfig
+
+    options = {}
+    if model == 'kinematic':
+        builder, arguments = build_kinematic_rollout, (0.5, 2, 0.25)
+    else:
+        builder = build_dynamic_light_rollout if model == 'dynamic_light' else build_dynamic_rollout
+        arguments = (0.5, 2, 0.05, 0.25)
+    if model == 'dynamic_actuators':
+        options = dict(powertrain=PowertrainConfig(), efficiency=lambda *_: (0.9, 0.9))
+    x = np.arange(0., 40., 0.25)
+    path = np.column_stack((x, 0.02 * x**2, np.zeros_like(x)))
+    reference = prepare_progress_reference(path, 96)
+    inputs = [np.zeros(3 if model == 'kinematic' else 4), [0., 0., 0., 0., 5., 0., 0.],
+              0., 0., np.zeros(4), np.zeros(4), 0., reference]
+    if model == 'dynamic_actuators':
+        inputs.append([5.0 * 9.0 / 0.32, 0., 0., 0.])
+    base = builder(*arguments, **options)(*inputs)
+    current = builder(*arguments, steering_time=0., **options)(*inputs)
+    future = builder(*arguments, steering_time=0.13, **options)(*inputs)
+    for expected, first, second in zip(base, current[:-1], future[:-1]):
+        np.testing.assert_array_equal(first.full(), expected.full())
+        np.testing.assert_array_equal(second.full(), expected.full())
+    assert 0.0 < float(current[-1]) <= 0.6
+    assert 0.0 < float(future[-1]) <= 0.6
+    assert abs(float(future[-1] - current[-1])) > 1e-6
 
 
 def test_published_trajectory_follows_curved_scenario(node):

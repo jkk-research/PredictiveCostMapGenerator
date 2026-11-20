@@ -10,6 +10,8 @@ from plan_predictive_cost_map.pcm_longitudinal import pcm_node
 
 
 def export_model(parameters, directory, representation='polynomial'):
+    if parameters.get('sparse_gp', False) and parameters.get('gp_reduction_method') == 'gp_hard_reduction':
+        raise ValueError('gp_hard_reduction is supported by the Python planner only')
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     arguments = ['--ros-args']

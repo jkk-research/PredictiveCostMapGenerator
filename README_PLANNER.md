@@ -315,8 +315,9 @@ still not implemented, and no geometric fallback was introduced.
 
 ### Dynamic GP Compression and Timing
 
-Full mode remains the default and retains the original GP fitting, support
-counts, objective, and sampled safety constraints:
+Full mode retains the original GP fitting, support counts, objective, and
+sampled safety constraints. It is the node default; the saved Python launch uses
+`sparse_gp:=true` and `object_support_points:=5`:
 
 ```bash
 ros2 launch plan_predictive_cost_map pcm_longitudinal.launch.py \
@@ -333,8 +334,9 @@ ros2 launch plan_predictive_cost_map pcm_longitudinal.launch.py \
 
 Restart the planner when changing `sparse_gp` or `object_support_points`; both
 are read-only startup parameters because the symbolic support dimensions change.
-`object_support_points` defaults to 9 and must be between 2 and
-`prediction_steps` in sparse mode. It is ignored in full mode. The existing
+`object_support_points` has a node default of 9 and must be between 2 and
+`prediction_steps` in per-trajectory sparse mode. It is ignored in full mode and
+in the opt-in global mode described below. The existing
 `prediction_steps` still controls ego safety-check times and the original full
 object GP fit. Static target/drivable GPs and dynamic-light dense constraints
 are unchanged. No additional object or prediction branch is discarded by
@@ -366,12 +368,106 @@ With a budget equal to `prediction_steps`, the original coefficients are kept
 exactly and the error bound is zero. No geometric collision override, fallback
 trajectory, or full-surface/progress-time surrogate is introduced.
 
-This reduces kernel terms inside optimization, not the original fitting cost.
-Additional projection work happens outside IPOPT. A loose global error bound
+Compression reduces active kernel supports, not the original fitting cost.
+Full-capacity recovery reserves padded symbolic supports for kinematic,
+dynamic-light, and actuator modes, so fewer active supports do not by themselves
+guarantee faster optimization. Additional projection work happens outside the
+optimizer. A loose global error bound
 can increase conservatism or make an otherwise feasible problem infeasible;
 rejected solutions still do not publish a replacement command or trajectory.
 The bound only relates the two cost fields, not real-world safety or constraint
 satisfaction between prediction samples.
+
+#### Opt-in Global Mean Reduction
+
+The Python longitudinal launch now offers a separate reduction method. Existing
+defaults remain unchanged: `gp_reduction_method:=per_trajectory` selects the
+original branch-by-branch compressor. Enable the alternative with:
+
+```bash
+ros2 launch plan_predictive_cost_map pcm_longitudinal.launch.py \
+  sparse_gp:=true gp_reduction_method:=global_mean \
+  global_gp_min_supports:=10 global_gp_initial_fraction:=0.2 \
+  global_gp_distance_threshold:=0.75 global_gp_error_tolerance:=0.02
+```
+
+Global mode pools all retained object/branch supports within each dynamic GP,
+not separately per trajectory. Pedestrian and vehicle GPs remain independent
+because their kernels differ; static target and drivable GPs are unchanged.
+Existing object/branch capacity limits still apply before compression.
+
+The initial seed is the larger of the configured minimum and the ceiling of
+the initial fraction times the active candidate count, capped by available
+candidates. Exact duplicates need not fill the seed. Farthest-point seeding uses
+distance normalized by kernel X/Y/time length scales, not metres alone. The
+original full mean is projected onto the selected kernel basis, then residual-
+driven greedy additions continue until both the distance-coverage threshold and
+the conservative RKHS absolute-mean-error tolerance are met. The distance threshold
+is not a hard exclusion: nearby supports can be added when accuracy requires
+them. The final count can grow to the original full set; it is not a fixed budget.
+
+The existing conservative error margin is still used in optimization and the
+viewer. If compression exceeds the error tolerance or its conservative margin
+makes even empty space infeasible, the original full mean is used with zero
+approximation error. Global mode reserves full symbolic support capacity for
+this recovery in every Python prediction model, including legacy `dynamic`.
+This changes neither ego prediction samples nor physical constraints, and does
+not provide a timing or real-world safety guarantee.
+
+`sparse_gp:=false` disables reduction regardless of the selected method. All
+global settings and `gp_reduction_method` are read-only startup parameters.
+Timing records expose the selected method; GP layer metadata records actual
+active/candidate support counts, error bounds, and any recovery reason. This
+setting is exposed by the Python launch, not the separate native C++ launch.
+
+#### Opt-in Hard Object-GP Reduction
+
+```bash
+ros2 launch plan_predictive_cost_map pcm_longitudinal.launch.py \
+  sparse_gp:=true gp_reduction_method:=gp_hard_reduction \
+  gp_hard_max_supports:=40 gp_hard_path_distance:=3.0
+```
+
+This Python-only mode reserves at most `gp_hard_max_supports` object supports
+in the compiled optimizer, rather than padding to the original full capacity.
+The cap must be at least 2. It is split equally between pedestrian and vehicle
+GPs; pedestrians receive the extra slot for odd caps. Each field is additionally
+limited by its original capacity. Unused slots cannot transfer between fields.
+The two 128-support road-geometry GPs and ego rollout are unchanged. Existing
+object and branch intake limits still apply. The saved launch method remains
+unchanged; select this mode explicitly.
+
+First, objects whose prediction branches all remain far from the supplied
+target-path polyline are excluded as support-location candidates. Distance is
+normalized by the field's spatial kernel length scales; `gp_hard_path_distance`
+is dimensionless, not metres. The full supplied target path is used to avoid
+discarding interactions based on an assumed ego speed profile. A half-segment
+spacing allowance retains predictions that cross between supplied points;
+missing path geometry disables filtering. Any retained branch keeps the whole
+object eligible. Then deterministic farthest-point selection pools eligible
+supports across branches within each field, using normalized X/Y/time distance
+only. The original full GP fit is computed first, then selected supports keep
+their original coefficients exactly. Filtered and unselected kernel terms are
+simply deleted: there is no projection, coefficient refitting or compensation
+for the removed terms. This can distort the cost map and underestimate obstacle
+costs; deleting terms with negative coefficients can also increase costs.
+
+Unlike `global_mean`, hard reduction does not aim to preserve the original
+surface and applies no approximation error margin. Metadata `error_bound=0`
+means no margin is applied, NOT that the distortion is zero or bounded;
+`error_bound_certified=false` makes this distinction explicit. There is no
+full-capacity recovery or generated braking fallback. Existing cost limits and
+physical constraints remain, but they constrain the modified field, not the
+original one. This is not a guarantee of feasibility, real-world safety,
+closed-loop behavior or a 100 ms execution time. Use `global_mean` when the
+original-mean projection and conservative error margin are wanted.
+
+Both hard-mode parameters require a restart. `sparse_gp:=false` disables the
+mode. `object_support_points` and the `global_gp_*` settings do not control it.
+GP layer metadata reports candidate/active counts, filtered-object counts,
+allocated capacity, budget saturation and the uncertified zero applied margin.
+Timing records also expose allocated/active counts and filtered-object counts.
+The C++ exporter rejects this Python-only mode explicitly.
 
 `timing_enabled:=true` publishes JSON on `/plan/pcm_longitudinal/timing`,
 independently of the GP viewer:

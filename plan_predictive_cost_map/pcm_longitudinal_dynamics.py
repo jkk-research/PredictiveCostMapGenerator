@@ -27,7 +27,8 @@ def acceleration_polynomial_step(time_step, settings=VehicleConfig(), clip_accel
                        [next_state, acceleration, requested])
 
 
-def build_kinematic_rollout(horizon, prediction_steps, command_time, settings=VehicleConfig(), reference_points=96):
+def build_kinematic_rollout(horizon, prediction_steps, command_time, settings=VehicleConfig(),
+                            reference_points=96, steering_time=None):
     coefficients = ca.MX.sym('velocity_coefficients', 3)
     initial = ca.MX.sym('initial_state', 7)
     initial_ax = ca.MX.sym('initial_acceleration')
@@ -58,12 +59,44 @@ def build_kinematic_rollout(horizon, prediction_steps, command_time, settings=Ve
                         ca.MX.zeros(prediction_steps, 1), yaw_rate)
     command_speed = (initial[4] + coefficients[0] * command_time
                       + coefficients[1] * command_time**2 + coefficients[2] * command_time**3)
-    return ca.Function('longitudinal_kinematic_rollout',
-                       [coefficients, initial, initial_ax, initial_steering, lane_y, lane_z, initial_pitch, reference],
-                       [ca.horzcat(positions_x, positions_y, positions_z), speed,
+    outputs = [ca.horzcat(positions_x, positions_y, positions_z), speed,
                         ca.horzcat(acceleration, speed**2 * curvature, ca.MX.zeros(prediction_steps, 1)),
                         acceleration, command_speed, ca.atan(settings.wheelbase * curvature),
-                        ca.MX.zeros(0, 1), orientation, states, distance])
+                        ca.MX.zeros(0, 1), orientation, states, distance]
+    if steering_time is not None:
+        progress = (initial[4] * steering_time + coefficients[0] * steering_time**2 / 2.0
+                    + coefficients[1] * steering_time**3 / 3.0 + coefficients[2] * steering_time**4 / 4.0)
+        outputs.append(curvature_steering(lookup(progress, reference)[5], settings))
+    return ca.Function('longitudinal_kinematic_rollout',
+                       [coefficients, initial, initial_ax, initial_steering, lane_y, lane_z, initial_pitch, reference],
+                       outputs)
+
+
+def curvature_steering(curvature, settings):
+    return ca.fmin(settings.maximum_steering,
+                   ca.fmax(-settings.maximum_steering, ca.atan(settings.wheelbase * curvature)))
+
+
+def pure_pursuit_steering(scene_path, scene_pose, ego, settings):
+    scene_x, scene_y, scene_yaw, scene_z, scene_pitch = scene_pose
+    local_x, local_y, local_z = np.asarray(scene_path, dtype=float).T
+    forward = math.cos(scene_pitch) * local_x - math.sin(scene_pitch) * local_z
+    map_x = scene_x + math.cos(scene_yaw) * forward - math.sin(scene_yaw) * local_y
+    map_y = scene_y + math.sin(scene_yaw) * forward + math.cos(scene_yaw) * local_y
+    map_z = scene_z + math.sin(scene_pitch) * local_x + math.cos(scene_pitch) * local_z
+    nearest = int(np.argmin(np.hypot(map_x - ego.x, map_y - ego.y)))
+    distance = np.cumsum(np.linalg.norm(np.diff(np.column_stack((map_x, map_y, map_z))[nearest:], axis=0), axis=1))
+    lookahead = max(settings.minimum_lookahead, settings.lookahead_time * ego.vx)
+    target = min(nearest + 1 + np.searchsorted(distance, lookahead), len(map_x) - 1)
+    delta_x, delta_y, delta_z = map_x[target] - ego.x, map_y[target] - ego.y, map_z[target] - ego.z
+    lateral = -math.sin(ego.yaw) * delta_x + math.cos(ego.yaw) * delta_y
+    forward = (math.cos(ego.pitch) * (math.cos(ego.yaw) * delta_x + math.sin(ego.yaw) * delta_y)
+               + math.sin(ego.pitch) * delta_z)
+    squared_distance = forward**2 + lateral**2
+    if squared_distance < 1e-8:
+        return 0.0
+    angle = math.atan2(2.0 * settings.wheelbase * lateral, squared_distance)
+    return float(np.clip(angle, -settings.maximum_steering, settings.maximum_steering))
 
 
 def dynamic_light_sample_times(horizon, prediction_steps, control_step, command_time):
@@ -104,7 +137,7 @@ def velocity_profile_coefficients(horizon, initial_speed, target_speed, samples=
 
 def build_dynamic_light_rollout(horizon, prediction_steps, control_step, command_time,
                                 settings=VehicleConfig(), use_road_gradient=True, road_pitch=0.0,
-                                reference_points=96):
+                                reference_points=96, steering_time=None):
     coefficients = ca.MX.sym('velocity_coefficients', 4)
     initial = ca.MX.sym('initial_state', 7)
     initial_ax = ca.MX.sym('initial_acceleration')
@@ -145,20 +178,23 @@ def build_dynamic_light_rollout(horizon, prediction_steps, control_step, command
     world_z = initial[2] + ca.sin(initial_pitch) * positions[:, 0] + ca.cos(initial_pitch) * positions[:, 2]
     states = ca.horzcat(world_x, world_y, world_z, initial[3] + heading, speed,
                         ca.MX.zeros(prediction_steps, 1), speed * curvature)
-    steering = ca.fmin(settings.maximum_steering,
-                       ca.fmax(-settings.maximum_steering, ca.atan(settings.wheelbase * curvature)))
+    outputs = [positions, speed, ca.horzcat(dense_acceleration[indices], speed**2 * curvature,
+                                          ca.MX.zeros(prediction_steps, 1)),
+               dense_requests[indices], dense_speed[command_index], curvature_steering(curvature, settings),
+               dense_requests, orientation, states, progress]
+    if steering_time is not None:
+        command_progress = velocity_polynomial(steering_time, coefficients, initial[4], horizon)[2]
+        command_curvature = progress_reference_function(reference_points)(command_progress, reference)[5]
+        outputs.append(curvature_steering(command_curvature, settings))
     return ca.Function('longitudinal_dynamic_light_rollout',
         [coefficients, initial, initial_ax, initial_steering, lane_y, lane_z, initial_pitch, reference],
-        [positions, speed, ca.horzcat(dense_acceleration[indices], speed**2 * curvature,
-                                      ca.MX.zeros(prediction_steps, 1)),
-         dense_requests[indices], dense_speed[command_index], steering,
-         dense_requests, orientation, states, progress])
+        outputs)
 
 
 def build_dynamic_rollout(horizon, prediction_steps, control_step, command_time,
                           settings=VehicleConfig(), use_road_gradient=True, road_pitch=0.0, reference_points=96,
                           powertrain=None, efficiency=None, actuator_vehicle_model='dynamic',
-                          actuator_method='detailed', actuator_stage_step=0.005):
+                          actuator_method='detailed', actuator_stage_step=0.005, steering_time=None):
     coefficients = ca.MX.sym('acceleration_coefficients', 4)
     initial = ca.MX.sym('initial_state', 7)
     initial_ax = ca.MX.sym('initial_acceleration')
@@ -214,7 +250,7 @@ def build_dynamic_rollout(horizon, prediction_steps, control_step, command_time,
 
     initial_rotation = quaternion(initial[3], initial_pitch)
 
-    initial_road, _ = road_and_steering(initial, 0.0)
+    initial_road, command_steering = road_and_steering(initial, 0.0)
     if powertrain is None:
         initial_request = acceleration_command(settings)(initial, initial_ax, initial_steering, initial_road[1])
         polynomial = ca.vertcat(initial_request + coefficients[0], coefficients[1:4])
@@ -232,19 +268,35 @@ def build_dynamic_rollout(horizon, prediction_steps, control_step, command_time,
     actuator_samples, command_samples = [], []
     steps = {}
     command_speed = initial[4]
-    for previous_time, elapsed in zip(boundaries[:-1], boundaries[1:]):
-        duration = round(float(elapsed - previous_time), 12)
+
+    def interval(duration):
         if duration not in steps:
             steps[duration] = (acceleration_polynomial_step(duration, settings, clip_acceleration=False)
                 if powertrain is None else build_actuator_interval(duration, horizon, command_time,
                     efficiency, powertrain, settings, actuator_vehicle_model, actuator_method, actuator_stage_step))
+        return steps[duration]
+
+    steering_time = None if steering_time is None else round(steering_time, 12)
+    for previous_time, elapsed in zip(boundaries[:-1], boundaries[1:]):
+        duration = round(float(elapsed - previous_time), 12)
+        step = interval(duration)
         road, steering = road_and_steering(state, progress)
         previous_speed = state[4]
+        if steering_time is not None and previous_time < steering_time < elapsed:
+            partial_duration = round(float(steering_time - previous_time), 12)
+            partial_step = interval(partial_duration)
+            if powertrain is None:
+                partial_state = partial_step(state, polynomial, previous_time, steering, road)[0]
+                partial_progress = progress + 0.5 * (previous_speed + partial_state[4]) * partial_duration
+            else:
+                partial_joint = partial_step(joint, coefficients, initial[4], road, steering)[0]
+                partial_state, partial_progress = partial_joint[:7], partial_joint[13]
+            command_steering = road_and_steering(partial_state, partial_progress)[1]
         if powertrain is None:
-            state, acceleration, requested = steps[duration](state, polynomial, previous_time, steering, road)
+            state, acceleration, requested = step(state, polynomial, previous_time, steering, road)
             progress += 0.5 * (previous_speed + state[4]) * duration
         else:
-            joint, acceleration, requested = steps[duration](joint, coefficients, initial[4], road, steering)
+            joint, acceleration, requested = step(joint, coefficients, initial[4], road, steering)
             state, progress = joint[:7], joint[13]
             command_samples.append(velocity_polynomial(min(previous_time + command_time, horizon),
                                                        coefficients, initial[4], horizon)[0])
@@ -252,6 +304,8 @@ def build_dynamic_rollout(horizon, prediction_steps, control_step, command_time,
         if elapsed == round(command_time, 12):
             command_speed = (state[4] if powertrain is None else
                 velocity_polynomial(command_time, coefficients, initial[4], horizon)[0])
+        if elapsed == steering_time:
+            command_steering = road_and_steering(state, progress)[1]
         if elapsed in prediction_times:
             positions.append(local_position(state).T)
             speeds.append(state[4])
@@ -283,5 +337,7 @@ def build_dynamic_rollout(horizon, prediction_steps, control_step, command_time,
         inputs.append(actuator_initial)
         outputs.extend([joint[11], joint[12], joint[11] - joint[12], ca.vertcat(*actuator_samples),
                         ca.vertcat(*command_samples, velocity_polynomial(horizon, coefficients, initial[4], horizon)[0])])
+    if steering_time is not None:
+        outputs.append(command_steering)
     return ca.Function('longitudinal_dynamic_rollout' if powertrain is None else 'longitudinal_dynamic_actuators_rollout',
                        inputs, outputs)

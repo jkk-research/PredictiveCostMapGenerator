@@ -38,9 +38,10 @@ import matplotlib.patches as patches
 import time
 from rclpy.executors import MultiThreadedExecutor
 import threading
-from plan_predictive_cost_map.pcm_kernels import compress_rbf_mean, lane_kernel, numeric_rbf_kernel, rbf_kernel
+from plan_predictive_cost_map.pcm_kernels import compress_global_rbf_mean, compress_hard_rbf_mean, compress_rbf_mean, lane_kernel, numeric_rbf_kernel, rbf_kernel
 from plan_predictive_cost_map.pcm_lane_geometry import fit_drivable_gp, prepare_progress_reference
 from plan_predictive_cost_map.pcm_longitudinal_dynamics import build_dynamic_light_rollout, build_dynamic_rollout, build_kinematic_rollout, dynamic_light_sample_times, shift_velocity_coefficients, velocity_polynomial, velocity_profile_coefficients
+from plan_predictive_cost_map.pcm_longitudinal_dynamics import pure_pursuit_steering
 from plan_predictive_cost_map.planner.config import VehicleConfig
 from plan_predictive_cost_map.pcm_sqp import DenseSQPSolver
 from plan_predictive_cost_map.pcm_scenario import (
@@ -98,6 +99,8 @@ class pcm_node(Node):
         self.timing_history = collections.deque(maxlen=200)
         self.target_speed = 0.0
         self.command_lookahead_time = self.declare_parameter('command_lookahead_time', 0.25).value
+        self.steering_command_mode = self.declare_parameter('steering_command_mode', 'zero').value
+        self.steering_lookahead_time = self.declare_parameter('steering_lookahead_time', 0.25).value
         self.lane_noise_std = self.declare_parameter('lane_noise_std', 0.001).value
         self.reference_samples = self.declare_parameter('reference_samples', 96).value
         self.target_support_points = self.declare_parameter('target_support_points', 128).value
@@ -141,6 +144,11 @@ class pcm_node(Node):
                 raise ValueError(f'{name} must be finite and nonnegative')
         if not math.isfinite(self.command_lookahead_time) or not 0.0 <= self.command_lookahead_time <= self.tau_h:
             raise ValueError('command_lookahead_time must lie within the lookahead_time')
+        if self.steering_command_mode not in ('zero', 'pure_pursuit', 'predicted'):
+            raise ValueError('steering_command_mode must be zero, pure_pursuit, or predicted')
+        steering_time = self.steering_lookahead_time if self.steering_command_mode == 'predicted' else None
+        if steering_time is not None and (not math.isfinite(steering_time) or not 0.0 <= steering_time <= self.tau_h):
+            raise ValueError('steering_lookahead_time must lie within the lookahead_time in predicted mode')
         self.dt = self.tau_h / self.N
         self.t = ca.vertcat(*[self.dt * (i+1) for i in range(self.N)])        
         self.M = 3 if self.prediction_model == 'kinematic' else 4
@@ -203,18 +211,21 @@ class pcm_node(Node):
                 self.tau_h, self.N, self.model_control_step, self.command_lookahead_time,
                 self.vehicle_settings, self.use_road_gradient, self.model_road_pitch, self.reference_samples,
                 self.powertrain_settings, efficiency, self.actuator_vehicle_model,
-                self.actuator_integration, self.actuator_stage_step)
+                self.actuator_integration, self.actuator_stage_step, steering_time=steering_time)
         elif self.prediction_model == 'dynamic':
             self.model_rollout = build_dynamic_rollout(
                 self.tau_h, self.N, self.model_control_step, self.command_lookahead_time,
-                self.vehicle_settings, self.use_road_gradient, self.model_road_pitch, self.reference_samples)
+                self.vehicle_settings, self.use_road_gradient, self.model_road_pitch, self.reference_samples,
+                steering_time=steering_time)
         elif self.prediction_model == 'dynamic_light':
             self.model_rollout = build_dynamic_light_rollout(
                 self.tau_h, self.N, self.light_constraint_step, self.command_lookahead_time,
-                self.vehicle_settings, self.use_road_gradient, self.model_road_pitch, self.reference_samples)
+                self.vehicle_settings, self.use_road_gradient, self.model_road_pitch, self.reference_samples,
+                steering_time=steering_time)
         else:
             self.model_rollout = build_kinematic_rollout(
-                self.tau_h, self.N, self.command_lookahead_time, self.vehicle_settings, self.reference_samples)
+                self.tau_h, self.N, self.command_lookahead_time, self.vehicle_settings, self.reference_samples,
+                steering_time=steering_time)
 
         self.ego_state = EgoState(13.0,0,0,0,0)
 
@@ -247,13 +258,43 @@ class pcm_node(Node):
         self.sparse_gp = self.declare_parameter(
             'sparse_gp', False, ParameterDescriptor(read_only=True,
                 description='Compress the original dynamic GP mean; requires planner restart')).value
+        reduction_descriptor = ParameterDescriptor(read_only=True,
+            description='Dynamic GP reduction setting; requires planner restart')
+        self.gp_reduction_method = self.declare_parameter(
+            'gp_reduction_method', 'per_trajectory', reduction_descriptor).value
+        self.gp_hard_max_supports = self.declare_parameter(
+            'gp_hard_max_supports', 40, reduction_descriptor).value
+        self.gp_hard_path_distance = self.declare_parameter(
+            'gp_hard_path_distance', 3.0, reduction_descriptor).value
+        self.global_gp_min_supports = self.declare_parameter(
+            'global_gp_min_supports', 10, reduction_descriptor).value
+        self.global_gp_initial_fraction = self.declare_parameter(
+            'global_gp_initial_fraction', 0.2, reduction_descriptor).value
+        self.global_gp_distance_threshold = self.declare_parameter(
+            'global_gp_distance_threshold', 0.75, reduction_descriptor).value
+        self.global_gp_error_tolerance = self.declare_parameter(
+            'global_gp_error_tolerance', 0.02, reduction_descriptor).value
+        if self.gp_reduction_method not in ('per_trajectory', 'global_mean', 'gp_hard_reduction'):
+            raise ValueError('gp_reduction_method must be per_trajectory, global_mean or gp_hard_reduction')
+        if (self.gp_hard_max_supports < 2 or not math.isfinite(self.gp_hard_path_distance)
+                or self.gp_hard_path_distance <= 0):
+            raise ValueError('Hard GP reduction requires at least 2 total supports and a positive path distance')
+        if (self.global_gp_min_supports < 1
+                or not math.isfinite(self.global_gp_initial_fraction)
+                or not 0 <= self.global_gp_initial_fraction <= 1
+                or not math.isfinite(self.global_gp_distance_threshold) or self.global_gp_distance_threshold <= 0
+                or not math.isfinite(self.global_gp_error_tolerance) or self.global_gp_error_tolerance < 0):
+            raise ValueError('Invalid global GP reduction settings')
         self.object_support_points = self.declare_parameter(
             'object_support_points', 9, ParameterDescriptor(read_only=True,
                 description='Kernel supports per object branch in sparse mode; independent of prediction_steps')).value
-        if self.sparse_gp and not 2 <= self.object_support_points <= self.N:
+        if self.sparse_gp and self.gp_reduction_method == 'per_trajectory' and not 2 <= self.object_support_points <= self.N:
             raise ValueError('object_support_points must lie between 2 and prediction_steps in sparse mode')
-        self.exact_gp_capacity = self.prediction_model in ('kinematic', 'dynamic_light', 'dynamic_actuators')
+        self.exact_gp_capacity = (self.prediction_model in ('kinematic', 'dynamic_light', 'dynamic_actuators')
+                                  or (self.sparse_gp and self.gp_reduction_method == 'global_mean'))
         support_steps = self.object_support_points if self.sparse_gp and not self.exact_gp_capacity else self.N
+        if self.sparse_gp and self.gp_reduction_method == 'gp_hard_reduction':
+            support_steps = self.N
         self.dynamic_gp_state = {}
         self.ay_max = self.declare_parameter('max_lateral_acceleration', 3.0).value
         self.ax_max = self.declare_parameter('max_longitudinal_acceleration', 5.0).value
@@ -261,6 +302,10 @@ class pcm_node(Node):
             raise ValueError('object and predicted-path limits must be at least 1')
         self.pedestrian_support_count = self.max_pedestrians * self.max_predicted_paths * support_steps
         self.vehicle_support_count = self.max_vehicles * self.max_predicted_paths * support_steps
+        if self.sparse_gp and self.gp_reduction_method == 'gp_hard_reduction':
+            self.exact_gp_capacity = False
+            self.pedestrian_support_count = min(self.pedestrian_support_count, (self.gp_hard_max_supports + 1) // 2)
+            self.vehicle_support_count = min(self.vehicle_support_count, self.gp_hard_max_supports // 2)
         if any(not math.isfinite(value) or value <= 0.0 for value in (self.ay_max, self.ax_max)):
             raise ValueError('acceleration limits must be finite and positive')
         self.pedestrian_cost_primitive = self.declare_parameter('pedestrian_cost', 3.0).value
@@ -537,12 +582,17 @@ class pcm_node(Node):
             x=pose.position.x, y=pose.position.y, z=pose.position.z,
             yaw=self.quaternion_to_yaw(rotation), pitch=pitch)
         stamp_ns = input_msg.header.stamp.sec * 1_000_000_000 + input_msg.header.stamp.nanosec
-        self.ego_history.append((stamp_ns, self.ego_state.x, self.ego_state.y, self.ego_state.yaw))
+        self.ego_history.append((stamp_ns, self.ego_state.x, self.ego_state.y, self.ego_state.yaw,
+                                 self.ego_state.z, self.ego_state.pitch))
 
-    def ego_pose_at(self, stamp_ns):
+    def ego_sample_at(self, stamp_ns):
         if not self.ego_history:
             return None
-        return min(self.ego_history, key=lambda sample: abs(sample[0] - stamp_ns))[1:]
+        return min(self.ego_history, key=lambda sample: abs(sample[0] - stamp_ns))
+
+    def ego_pose_at(self, stamp_ns):
+        sample = self.ego_sample_at(stamp_ns)
+        return sample[1:4] if sample is not None else None
 
     def queue_scenario(self, data):
         # A pipe-backed queue cannot drop stale messages, so keep at most one request in flight.
@@ -781,7 +831,30 @@ class pcm_node(Node):
         return np.column_stack((np.interp(times, sample_times, prediction.predicted_path[:, 0]),
                                 np.interp(times, sample_times, prediction.predicted_path[:, 1])))
 
-    def fit_dynamic_gp(self, objects, max_objects, kernel, severity, noise_base, noise_growth):
+    def hard_gp_near_path(self, obj, branches, kernel):
+        path = np.column_stack((self.lanes['ego_lane_x'], self.lanes['ego_lane_y']))
+        if not len(path) or not np.isfinite(path).all():
+            return True
+        scales = np.asarray(kernel[1:3])
+        path = path / scales
+        starts = path[:-1] if len(path) > 1 else path
+        segments = np.diff(path, axis=0) if len(path) > 1 else np.zeros((1, 2))
+        denominator = np.sum(segments**2, axis=1)
+        for branch in branches:
+            prediction = (branch.predicted_path[:, :2] if len(branch.predicted_path)
+                          else np.vstack(([obj.x, obj.y], self.sample_object_path(obj, branch))))
+            prediction = prediction / scales
+            relative = prediction[:, None, :] - starts[None, :, :]
+            fraction = np.clip(np.sum(relative * segments, axis=2) / np.maximum(denominator, 1e-24), 0, 1)
+            distance = np.sqrt(np.min(np.sum((relative - fraction[:, :, None] * segments)**2, axis=2)))
+            spacing = np.max(np.linalg.norm(np.diff(prediction, axis=0), axis=1)) if len(prediction) > 1 else 0.0
+            if distance <= self.gp_hard_path_distance + 0.5 * spacing:
+                return True
+        return False
+
+    def fit_dynamic_gp(self, objects, max_objects, kernel, severity, noise_base, noise_growth, support_capacity=None):
+        hard_reduction = (getattr(self, 'sparse_gp', False)
+                          and getattr(self, 'gp_reduction_method', '') == 'gp_hard_reduction')
         count = max_objects * self.max_predicted_paths * self.N
         points = np.full((count, 3), 1000.0)
         targets = np.zeros(count)
@@ -791,6 +864,8 @@ class pcm_node(Node):
         times = np.asarray(self.t).flatten()
         used = 0
         groups = []
+        candidates = []
+        filtered_objects = 0
         dropped_branches = 0
         for obj in objects[:max_objects]:
             if obj.existence_probability <= 0.0:
@@ -800,9 +875,13 @@ class pcm_node(Node):
             branches = sorted((branch for branch in branches if branch.confidence > 0.0),
                               key=lambda branch: branch.confidence, reverse=True)
             dropped_branches += max(0, len(branches) - self.max_predicted_paths)
+            eligible = not hard_reduction or self.hard_gp_near_path(obj, branches[:self.max_predicted_paths], kernel)
+            filtered_objects += int(not eligible)
             for branch in branches[:self.max_predicted_paths]:
                 section = slice(used, used + self.N)
                 groups.append(np.arange(used, used + self.N))
+                if eligible:
+                    candidates.extend(range(used, used + self.N))
                 points[section] = np.column_stack((self.sample_object_path(obj, branch), times))
                 existence[section] = np.clip(obj.existence_probability, 0.0, 1.0)
                 confidence[section] = np.clip(branch.confidence, 0.0, 1.0)
@@ -820,16 +899,32 @@ class pcm_node(Node):
         metadata = {'targets': targets.tolist(), 'noise_variances': noise.tolist(),
                     'existence_probability': existence.tolist(), 'trajectory_confidence': confidence.tolist()}
         if getattr(self, 'sparse_gp', False):
-            selected, beta, bound = compress_rbf_mean(
-                points, alpha, kernel, groups, self.object_support_points, matrix)
-            exact_capacity = getattr(self, 'exact_gp_capacity', getattr(self, 'actuators_enabled', False))
-            reduced_count = max_objects * self.max_predicted_paths * (self.N if exact_capacity else self.object_support_points)
+            global_mean = getattr(self, 'gp_reduction_method', 'per_trajectory') == 'global_mean'
+            if hard_reduction:
+                if support_capacity is None:
+                    raise ValueError('Hard GP reduction requires an explicit field support capacity')
+                selected, beta, bound = compress_hard_rbf_mean(
+                    points, alpha, kernel, candidates, support_capacity)
+            elif global_mean:
+                selected, beta, bound = compress_global_rbf_mean(
+                    points, alpha, kernel, np.arange(used), matrix,
+                    self.global_gp_min_supports, self.global_gp_initial_fraction,
+                    self.global_gp_distance_threshold, self.global_gp_error_tolerance)
+            else:
+                selected, beta, bound = compress_rbf_mean(
+                    points, alpha, kernel, groups, self.object_support_points, matrix)
+            exact_capacity = not hard_reduction and (global_mean or getattr(self, 'exact_gp_capacity', getattr(self, 'actuators_enabled', False)))
+            reduced_count = (support_capacity if hard_reduction else
+                             max_objects * self.max_predicted_paths * (self.N if exact_capacity else self.object_support_points))
             floor = -1.0 + 0.5 * (bound + math.sqrt(bound * bound + 0.01))
-            if exact_capacity and floor > self.max_gp_cost:
+            if exact_capacity and (floor > self.max_gp_cost or (global_mean and bound > self.global_gp_error_tolerance)):
                 metadata.update(error_bound=0.0, source_support_count=count,
                     active_support_count=used, represented_branches=len(groups),
                     selected_source_indices=list(range(used)), compression='original_full_mean',
                     rejected_compression_error_bound=bound)
+                if global_mean:
+                    metadata.update(reduction_method='global_mean', candidate_support_count=used,
+                                    recovery_reason='gp_cost_floor' if floor > self.max_gp_cost else 'error_tolerance')
                 return points, alpha, metadata
             reduced_points = np.full((reduced_count, 3), 1000.0)
             reduced_alpha = np.zeros(reduced_count)
@@ -841,7 +936,18 @@ class pcm_node(Node):
             metadata.update(error_bound=bound, source_support_count=count,
                             active_support_count=len(selected), represented_branches=len(groups),
                             selected_source_indices=selected.tolist(),
-                            compression='original_mean_rkhs_projection')
+                            compression='global_mean_rkhs_projection' if global_mean else 'original_mean_rkhs_projection')
+            if global_mean:
+                metadata.update(reduction_method='global_mean', candidate_support_count=used,
+                                distance_threshold=self.global_gp_distance_threshold,
+                                error_tolerance=self.global_gp_error_tolerance)
+            if hard_reduction:
+                metadata.update(reduction_method='gp_hard_reduction', compression='hard_support_deletion',
+                                candidate_support_count=len(candidates), filtered_object_count=filtered_objects,
+                                support_capacity=support_capacity, total_support_cap=self.gp_hard_max_supports,
+                                path_distance=self.gp_hard_path_distance,
+                                budget_saturated=len(selected) == support_capacity,
+                                error_bound_certified=False)
             return reduced_points, reduced_alpha, metadata
         return points, alpha, metadata
 
@@ -875,12 +981,12 @@ class pcm_node(Node):
         stage_started = default_timer()
         p_obj, alpha_ped, pedestrian_state = self.fit_dynamic_gp(
             self.pedestrians, self.max_pedestrians, self.p_ped, self.pedestrian_cost_primitive,
-            self.pedestrian_noise_base, self.pedestrian_noise_growth)
+            self.pedestrian_noise_base, self.pedestrian_noise_growth, self.pedestrian_support_count)
         timings['pedestrian_gp_seconds'] = default_timer() - stage_started
         stage_started = default_timer()
         p_veh, alpha_veh, vehicle_state = self.fit_dynamic_gp(
             self.vehicles, self.max_vehicles, self.p_veh, self.vehicle_cost_primitive,
-            self.vehicle_noise_base, self.vehicle_noise_growth)
+            self.vehicle_noise_base, self.vehicle_noise_growth, self.vehicle_support_count)
         timings['vehicle_gp_seconds'] = default_timer() - stage_started
         stage_started = default_timer()
         self.dynamic_gp_state = {'pedestrian': pedestrian_state, 'vehicle': vehicle_state}
@@ -1049,6 +1155,15 @@ class pcm_node(Node):
         control_cmd_msg = Control()
         control_cmd_msg.stamp = self.get_clock().now().to_msg()
         control_cmd_msg.longitudinal.velocity = float(velocityTarget)
+        if self.steering_command_mode == 'predicted':
+            control_cmd_msg.lateral.steering_tire_angle = float(prediction[-1])
+        elif self.steering_command_mode == 'pure_pursuit':
+            sample = self.ego_sample_at(self.scenario_stamp_ns)
+            if sample is not None:
+                path = np.column_stack([self.lanes['ego_lane_' + axis] for axis in 'xyz'])
+                if len(path):
+                    control_cmd_msg.lateral.steering_tire_angle = pure_pursuit_steering(
+                        path, sample[1:], self.ego_state, self.vehicle_settings)
         self.cmd_pub.publish(control_cmd_msg)
 
         # getting the trajectory
@@ -1066,7 +1181,7 @@ class pcm_node(Node):
         output_pose = self.planning_pose if self.actuators_enabled else self.scenario_pose
         if output_pose is not None and self.ego_history:
             x0, y0, yaw0 = output_pose
-            _, x1, y1, yaw1 = self.ego_history[-1]
+            x1, y1, yaw1 = self.ego_history[-1][1:4]
             map_x = x0 + math.cos(yaw0) * x_final - math.sin(yaw0) * y_final
             map_y = y0 + math.sin(yaw0) * x_final + math.cos(yaw0) * y_final
             x_final = math.cos(yaw1) * (map_x - x1) + math.sin(yaw1) * (map_y - y1)
@@ -1149,8 +1264,14 @@ class pcm_node(Node):
                   'deadline_missed': total > self.timer_period,
                   'prediction_model': self.prediction_model,
                   'gp_mode': 'sparse' if self.sparse_gp else 'full',
+                  'gp_reduction_method': getattr(self, 'gp_reduction_method', 'per_trajectory'),
                   'object_support_points': self.object_support_points if self.sparse_gp else self.N,
                   'dynamic_support_counts': [self.pedestrian_support_count, self.vehicle_support_count],
+                  'gp_hard_max_supports': getattr(self, 'gp_hard_max_supports', 40),
+                  'gp_active_support_counts': [self.dynamic_gp_state.get(name, {}).get('active_support_count', 0)
+                                               for name in ('pedestrian', 'vehicle')],
+                  'gp_filtered_object_counts': [self.dynamic_gp_state.get(name, {}).get('filtered_object_count', 0)
+                                                for name in ('pedestrian', 'vehicle')],
                   'gp_error_bounds': [self.dynamic_gp_state.get(name, {}).get('error_bound', 0.0)
                                       for name in ('pedestrian', 'vehicle')],
                   'accepted': getattr(self, 'plan_diagnostics', {}).get('accepted'),
